@@ -74,4 +74,6 @@ crashlytics-build.properties
 WindowsBuild
 .vscode
 SceneDependencyCache
+SceneDependencyCache.meta
 GlobalEntitiesDependencies
+GlobalEntitiesDependencies.meta
