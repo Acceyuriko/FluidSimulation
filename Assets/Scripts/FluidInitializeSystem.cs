@@ -1,5 +1,6 @@
 using Unity.Entities;
 using Unity.Mathematics;
+using Unity.Rendering;
 using Unity.Transforms;
 using UnityEngine;
 
@@ -37,7 +38,7 @@ public class FluidInitializeSystem : SystemBase
 
         Entities
             .WithAll<FluidTag>()
-            .ForEach((Entity entity, in LocalToWorld localToWorld, in FluidTag fluidTag) =>
+            .ForEach((Entity entity, in LocalToWorld localToWorld, in RenderBounds bounds, in FluidTag fluidTag) =>
             {
                 var halfX = math.distance(localToWorld.Right, localToWorld.Position);
                 var halfY = math.distance(localToWorld.Up, localToWorld.Position);
