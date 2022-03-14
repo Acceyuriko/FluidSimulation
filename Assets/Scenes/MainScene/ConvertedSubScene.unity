@@ -434,7 +434,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 0636ed360fb7ba946bc1a007235089c0, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  radius: 0.5
+  radius: 0.2
 --- !u!23 &1921122769
 MeshRenderer:
   m_ObjectHideFlags: 0
