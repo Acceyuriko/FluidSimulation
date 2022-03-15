@@ -412,9 +412,9 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 1921122771}
-  - component: {fileID: 1921122770}
-  - component: {fileID: 1921122769}
   - component: {fileID: 1921122768}
+  - component: {fileID: 1921122769}
+  - component: {fileID: 1921122770}
   m_Layer: 0
   m_Name: Water
   m_TagString: Untagged
@@ -434,8 +434,21 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 0636ed360fb7ba946bc1a007235089c0, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  radius: 0.2
---- !u!23 &1921122769
+  radius: 0.3
+  density: 1
+  gravity:
+    x: 0
+    y: -9.81
+    z: 0
+--- !u!33 &1921122769
+MeshFilter:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1921122767}
+  m_Mesh: {fileID: 10202, guid: 0000000000000000e000000000000000, type: 0}
+--- !u!23 &1921122770
 MeshRenderer:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -454,7 +467,7 @@ MeshRenderer:
   m_RenderingLayerMask: 1
   m_RendererPriority: 0
   m_Materials:
-  - {fileID: 2100000, guid: 31321ba15b8f8eb4c954353edc038b1d, type: 2}
+  - {fileID: 2100000, guid: 5565e9f5a6e311846ae1486ce4f9e2ea, type: 2}
   m_StaticBatchInfo:
     firstSubMesh: 0
     subMeshCount: 0
@@ -476,14 +489,6 @@ MeshRenderer:
   m_SortingLayer: 0
   m_SortingOrder: 0
   m_AdditionalVertexStreams: {fileID: 0}
---- !u!33 &1921122770
-MeshFilter:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1921122767}
-  m_Mesh: {fileID: 10202, guid: 0000000000000000e000000000000000, type: 0}
 --- !u!4 &1921122771
 Transform:
   m_ObjectHideFlags: 0
