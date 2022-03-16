@@ -113,11 +113,12 @@ public class FluidInitializeSystem : SystemBase
                                     new Unity.Physics.Material { Friction = 0f, Restitution = 1f }
                                 )
                             });
-                            commandBuffer.AddSharedComponent(particle, new FluidParticleComponent
+                            commandBuffer.AddComponent(particle, new FluidParticleComponent
                             {
                                 Fluid = entity,
                                 radius = fluid.radius,
                                 density = fluid.density,
+                                viscosity = fluid.viscosity,
                                 gravity = fluid.gravity,
 
                                 volume = volume,

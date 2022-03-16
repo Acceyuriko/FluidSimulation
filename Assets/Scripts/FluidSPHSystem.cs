@@ -1,16 +1,13 @@
-using System;
-using System.Collections.Generic;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
-using Unity.Physics.Extensions;
 using Unity.Transforms;
-using UnityEngine;
 
 [UpdateInGroup(typeof(InitializationSystemGroup))]
+[UpdateBefore(typeof(EndInitializationEntityCommandBufferSystem))]
 public class FluidSPHSystem : SystemBase
 {
     [BurstCompile]
@@ -21,10 +18,13 @@ public class FluidSPHSystem : SystemBase
         [ReadOnly] public float size;
         [ReadOnly] public float3 min;
         public NativeMultiHashMap<int, int>.ParallelWriter hashMap;
+        public NativeArray<int> positionToGrid;
 
         public void Execute(int index)
         {
-            hashMap.Add(HashPositionToGridIndex(positions[index].Value, min, size, gridLength), index);
+            var gridIndex = HashPositionToGridIndex(positions[index].Value, min, size, gridLength);
+            positionToGrid[index] = gridIndex;
+            hashMap.Add(gridIndex, index);
         }
     }
 
@@ -32,16 +32,43 @@ public class FluidSPHSystem : SystemBase
     private struct ComputeDensityAndPressureJob : IJobParallelFor
     {
         [ReadOnly] public NativeArray<Translation> positions;
+        [ReadOnly] public NativeArray<int> positionToGrid;
+        [ReadOnly] public NativeArray<FluidParticleComponent> particles;
         [ReadOnly] public int3 gridLength;
-        [ReadOnly] public float size;
-        [ReadOnly] public float3 min;
         [ReadOnly] public NativeMultiHashMap<int, int> hashMap;
         public NativeArray<float> densities;
         public NativeArray<float> pressures;
 
         public void Execute(int index)
         {
+            float density = 0f;
+            var gridIndex = positionToGrid[index];
+            var position = positions[index].Value;
+            var setting = particles[index];
+            var radiusSq = math.pow(setting.radius, 2);
 
+            for (int x = -1; x <= 1; x++)
+            {
+                for (int y = -1; y <= -1; y++)
+                {
+                    for (int z = -1; z <= 1; z++)
+                    {
+                        var neighborGridIndex = gridIndex + XyzToGridIndex(x, y, z, gridLength);
+                        var found = hashMap.TryGetFirstValue(neighborGridIndex, out var j, out var iterator);
+                        while (found)
+                        {
+                            float distanceSq = math.lengthsq(position - positions[j].Value);
+                            if (distanceSq < radiusSq)
+                            {
+                            }
+                            found = hashMap.TryGetNextValue(out j, ref iterator);
+                        }
+                    }
+                }
+            }
+
+            densities[index] = density;
+            pressures[index] = density;
         }
     }
 
@@ -58,7 +85,6 @@ public class FluidSPHSystem : SystemBase
 
         public void Execute(int index)
         {
-
         }
     }
 
@@ -67,15 +93,10 @@ public class FluidSPHSystem : SystemBase
 
     private EntityQuery m_ParticleQuery;
 
-    private int m_Concurrency;
-
-    private readonly List<FluidParticleComponent> m_FluidTypes = new List<FluidParticleComponent>();
-
-    private readonly float m_GridSize = 1f;
+    private readonly int m_Concurrency = 32;
 
     protected override void OnCreate()
     {
-        m_Concurrency = Environment.ProcessorCount;
         m_EndInitializationECB = World.GetOrCreateSystem<EndInitializationEntityCommandBufferSystem>();
         m_ParticleQuery = GetEntityQuery(new EntityQueryDesc
         {
@@ -88,65 +109,88 @@ public class FluidSPHSystem : SystemBase
     protected override void OnUpdate()
     {
         var commandBuffer = m_EndInitializationECB.CreateCommandBuffer().AsParallelWriter();
-        EntityManager.GetAllUniqueSharedComponentData(m_FluidTypes);
 
-        var positions = m_ParticleQuery.ToComponentDataArray<Translation>(Allocator.TempJob);
+        var positions = m_ParticleQuery.ToComponentDataArrayAsync<Translation>(Allocator.TempJob, out var positionHandle);
+        var particles = m_ParticleQuery.ToComponentDataArrayAsync<FluidParticleComponent>(Allocator.TempJob, out var particleHandle);
+        var velocities = m_ParticleQuery.ToComponentDataArrayAsync<PhysicsVelocity>(Allocator.TempJob, out var velocityHandle);
+        var masses = m_ParticleQuery.ToComponentDataArrayAsync<PhysicsMass>(Allocator.TempJob, out var massHandle);
+
+        Dependency = JobHandle.CombineDependencies(
+            JobHandle.CombineDependencies(
+                positionHandle,
+                particleHandle,
+                velocityHandle
+            ),
+            massHandle
+        );
+
+        var gridSize = 1f;
+
+        Entities
+            .WithAll<FluidComponent>()
+            .ForEach((in FluidComponent fluid) =>
+            {
+                var size = fluid.radius * 4f;
+                if (size < gridSize)
+                {
+                    gridSize = size;
+                }
+            }).Run();
 
         // 计算网格布局
-        var bounds = new Bounds();
-        bounds.SetMinMax(new Vector3(float.MinValue, float.MinValue, float.MinValue), new Vector3(float.MaxValue, float.MaxValue, float.MaxValue));
-
-        var gridSize = m_GridSize;
+        var min = new float3(float.MaxValue);
+        var max = new float3(float.MinValue);
         var gridLength = new int3();
 
-        var min = bounds.min;
-        var max = bounds.max;
-        for (int i = 0; i < positions.Length; i++)
+        Dependency = Job.WithCode(() =>
         {
-            if (positions[i].Value.x < min.x) min.x = positions[i].Value.x;
-            if (positions[i].Value.y < min.y) min.y = positions[i].Value.y;
-            if (positions[i].Value.z < min.z) min.z = positions[i].Value.z;
+            for (int i = 0; i < positions.Length; i++)
+            {
+                if (positions[i].Value.x < min.x) min.x = positions[i].Value.x;
+                if (positions[i].Value.y < min.y) min.y = positions[i].Value.y;
+                if (positions[i].Value.z < min.z) min.z = positions[i].Value.z;
 
-            if (positions[i].Value.x > max.x) max.x = positions[i].Value.x;
-            if (positions[i].Value.y > max.y) max.y = positions[i].Value.y;
-            if (positions[i].Value.z > max.z) max.z = positions[i].Value.z;
-        }
+                if (positions[i].Value.x > max.x) max.x = positions[i].Value.x;
+                if (positions[i].Value.y > max.y) max.y = positions[i].Value.y;
+                if (positions[i].Value.z > max.z) max.z = positions[i].Value.z;
+            }
 
-        min.x = math.floor(min.x / gridSize) * gridSize;
-        min.y = math.floor(min.y / gridSize) * gridSize;
-        min.z = math.floor(min.z / gridSize) * gridSize;
-        // 按左闭右开划分网格，因此最大值需要加上额外一个网格
-        max.x = math.ceil(max.x / gridSize) * gridSize + 1f;
-        max.y = math.ceil(max.y / gridSize) * gridSize + 1f;
-        max.z = math.ceil(max.z / gridSize) * gridSize + 1f;
+            min.x = math.floor(min.x / gridSize) * gridSize;
+            min.y = math.floor(min.y / gridSize) * gridSize;
+            min.z = math.floor(min.z / gridSize) * gridSize;
+            // 按左闭右开划分网格，因此最大值需要加上额外一个网格
+            max.x = math.ceil(max.x / gridSize) * gridSize + 1f;
+            max.y = math.ceil(max.y / gridSize) * gridSize + 1f;
+            max.z = math.ceil(max.z / gridSize) * gridSize + 1f;
 
-        bounds.SetMinMax(min, max);
+            gridLength.x = (int)math.ceil((max.x - min.x) / gridSize);
+            gridLength.y = (int)math.ceil((max.y - min.y) / gridSize);
+            gridLength.z = (int)math.ceil((max.z - min.z) / gridSize);
+        }).Schedule(Dependency);
 
-        gridLength.x = (int)math.ceil((max.x - min.x) / gridSize);
-        gridLength.y = (int)math.ceil((max.y - min.y) / gridSize);
-        gridLength.z = (int)math.ceil((max.z - min.z) / gridSize);
-
-        // 创建网格
+        // 创建网格 TODO: 使用 https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function 合并计算与创建网格
         var grid = new NativeMultiHashMap<int, int>(positions.Length, Allocator.TempJob);
+        var positionToGrid = new NativeArray<int>(positions.Length, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
         var hashPositionJob = new HashPositionJob
         {
             positions = positions,
-            min = bounds.min,
+            positionToGrid = positionToGrid,
+            min = min,
             size = gridSize,
             gridLength = gridLength,
             hashMap = grid.AsParallelWriter(),
         };
         Dependency = hashPositionJob.Schedule(positions.Length, m_Concurrency, Dependency);
 
-        var pressures = new NativeArray<float>(positions.Length, Allocator.TempJob);
-        var densities = new NativeArray<float>(positions.Length, Allocator.TempJob);
+        var pressures = new NativeArray<float>(positions.Length, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+        var densities = new NativeArray<float>(positions.Length, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
 
         // 计算密度和压力
         var computeDensityAndPressureJob = new ComputeDensityAndPressureJob
         {
             positions = positions,
-            min = bounds.min,
-            size = gridSize,
+            positionToGrid = positionToGrid,
+            particles = particles,
             gridLength = gridLength,
             hashMap = grid,
             densities = densities,
@@ -154,21 +198,14 @@ public class FluidSPHSystem : SystemBase
         };
         Dependency = computeDensityAndPressureJob.Schedule(positions.Length, m_Concurrency, Dependency);
 
-        var forces = new NativeArray<float3>(positions.Length, Allocator.TempJob);
+        var forces = new NativeArray<float3>(positions.Length, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
 
-        var velocities = m_ParticleQuery.ToComponentDataArray<PhysicsVelocity>(Allocator.TempJob);
-        var masses = m_ParticleQuery.ToComponentDataArray<PhysicsMass>(Allocator.TempJob);
-
-        // var velocity = velocities[0];
-        // Debug.Log(velocity.Linear);
-        // velocity.ApplyLinearImpulse(masses[0], new float3(0, 1, 0));
-        // velocities[0] = velocity;
 
         // 计算力并应用
         var computeForceJob = new ComputeForceJob
         {
             positions = positions,
-            min = bounds.min,
+            min = min,
             size = gridSize,
             gridLength = gridLength,
             hashMap = grid,
@@ -179,8 +216,12 @@ public class FluidSPHSystem : SystemBase
 
         positions.Dispose(Dependency);
         grid.Dispose(Dependency);
+        positionToGrid.Dispose(Dependency);
+
         pressures.Dispose(Dependency);
         densities.Dispose(Dependency);
+        particles.Dispose(Dependency);
+
         forces.Dispose(Dependency);
         velocities.Dispose(Dependency);
         masses.Dispose(Dependency);
@@ -194,8 +235,16 @@ public class FluidSPHSystem : SystemBase
 
     private static int HashPositionToGridIndex(float3 position, float3 min, float size, int3 gridLength)
     {
-        return (int)math.floor((position.x - min.x) / size) +
-            gridLength.x * (int)math.floor((position.y - min.y) / size) +
-            gridLength.x * gridLength.y * (int)math.floor((position.z - min.z) / size);
+        return XyzToGridIndex(
+            (int)math.floor((position.x - min.x) / size),
+            (int)math.floor((position.y - min.y) / size),
+            (int)math.floor((position.z - min.z) / size),
+            gridLength
+        );
+    }
+
+    private static int XyzToGridIndex(int x, int y, int z, int3 gridLength)
+    {
+        return x + gridLength.x * y + gridLength.x * gridLength.y * z;
     }
 }
