@@ -5,6 +5,7 @@ using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
+using Unity.Profiling;
 using Unity.Transforms;
 using UnityEngine;
 
@@ -16,9 +17,9 @@ public class FluidSPHSystem : SystemBase
     private struct HashPositionJob : IJobParallelFor
     {
         [ReadOnly] public NativeArray<Translation> positions;
-        [ReadOnly] public int3 gridLength;
+        [ReadOnly] public NativeArray<int> gridLength;
+        [ReadOnly] public NativeArray<float> min;
         [ReadOnly] public float size;
-        [ReadOnly] public float3 min;
         public NativeMultiHashMap<int, int>.ParallelWriter hashMap;
         public NativeArray<int> positionToGrid;
 
@@ -36,7 +37,7 @@ public class FluidSPHSystem : SystemBase
         [ReadOnly] public NativeArray<Translation> positions;
         [ReadOnly] public NativeArray<int> positionToGrid;
         [ReadOnly] public NativeArray<FluidParticleComponent> particles;
-        [ReadOnly] public int3 gridLength;
+        [ReadOnly] public NativeArray<int> gridLength;
         [ReadOnly] public float kernelRadiusRate;
         [ReadOnly] public NativeMultiHashMap<int, int> hashMap;
         public NativeArray<float> densities;
@@ -59,24 +60,29 @@ public class FluidSPHSystem : SystemBase
                     for (int z = -1; z <= 1; z++)
                     {
                         var neighborGridIndex = gridIndex + XyzToGridIndex(x, y, z, gridLength);
-                        var found = hashMap.TryGetFirstValue(neighborGridIndex, out var j, out var iterator);
-                        while (found)
+                        using (new ProfilerMarker("before while").Auto())
                         {
-                            float distanceSq = math.lengthsq(position - positions[j].Value);
-                            if (distanceSq < kernelRadius2)
+                            var count = 0;
+                            var found = hashMap.TryGetFirstValue(neighborGridIndex, out var j, out var iterator);
+                            while (found)
                             {
-                                // 光滑核函数 poly6, \rho_i = m \Sigma{W_{poly6}
-                                // 其中 W_poly6 = \frac{315}{64 \pi h^9} (h^2 - r^2)^3
-                                density += poly6Constant * math.pow(kernelRadius2 - distanceSq, 3f);
+                                float distanceSq = math.lengthsq(position - positions[j].Value);
+                                if (distanceSq < kernelRadius2)
+                                {
+                                    // 光滑核函数 poly6, \rho_i = m \Sigma{W_{poly6}
+                                    // 其中 W_poly6 = \frac{315}{64 \pi h^9} (h^2 - r^2)^3
+                                    density += poly6Constant * math.pow(kernelRadius2 - distanceSq, 3f);
+                                }
+                                found = hashMap.TryGetNextValue(out j, ref iterator);
+                                count++;
                             }
-                            found = hashMap.TryGetNextValue(out j, ref iterator);
                         }
                     }
                 }
             }
 
             densities[index] = density;
-            // 理想气体方程 p_i = k(\rho_i - \rho_0)，这里 k 取 2000
+            // // 理想气体方程 p_i = k(\rho_i - \rho_0)，这里 k 取 2000
             pressures[index] = 2000f * (density - setting.density);
         }
     }
@@ -129,35 +135,37 @@ public class FluidSPHSystem : SystemBase
             }).Run();
 
         // 计算网格布局
-        var min = new float3(float.MaxValue);
-        var max = new float3(float.MinValue);
-        var gridLength = new int3();
+        var min = new NativeArray<float>(3, Allocator.TempJob);
+        min[0] = min[1] = min[2] = float.MaxValue;
+        var gridLength = new NativeArray<int>(3, Allocator.TempJob);
 
         Dependency = Job.WithCode(() =>
         {
+            var max = new float3(float.MinValue);
             for (int i = 0; i < positions.Length; i++)
             {
-                if (positions[i].Value.x < min.x) min.x = positions[i].Value.x;
-                if (positions[i].Value.y < min.y) min.y = positions[i].Value.y;
-                if (positions[i].Value.z < min.z) min.z = positions[i].Value.z;
+                if (positions[i].Value.x < min[0]) min[0] = positions[i].Value.x;
+                if (positions[i].Value.y < min[1]) min[1] = positions[i].Value.y;
+                if (positions[i].Value.z < min[2]) min[2] = positions[i].Value.z;
 
                 if (positions[i].Value.x > max.x) max.x = positions[i].Value.x;
                 if (positions[i].Value.y > max.y) max.y = positions[i].Value.y;
                 if (positions[i].Value.z > max.z) max.z = positions[i].Value.z;
             }
 
-            min.x = math.floor(min.x / gridSize) * gridSize;
-            min.y = math.floor(min.y / gridSize) * gridSize;
-            min.z = math.floor(min.z / gridSize) * gridSize;
+            min[0] = math.floor(min[0] / gridSize) * gridSize;
+            min[1] = math.floor(min[1] / gridSize) * gridSize;
+            min[2] = math.floor(min[2] / gridSize) * gridSize;
             // 按左闭右开划分网格，因此最大值需要加上额外一个网格
             max.x = math.ceil(max.x / gridSize) * gridSize + 1f;
             max.y = math.ceil(max.y / gridSize) * gridSize + 1f;
             max.z = math.ceil(max.z / gridSize) * gridSize + 1f;
 
-            gridLength.x = (int)math.ceil((max.x - min.x) / gridSize);
-            gridLength.y = (int)math.ceil((max.y - min.y) / gridSize);
-            gridLength.z = (int)math.ceil((max.z - min.z) / gridSize);
+            gridLength[0] = (int)math.ceil((max.x - min[0]) / gridSize);
+            gridLength[1] = (int)math.ceil((max.y - min[1]) / gridSize);
+            gridLength[2] = (int)math.ceil((max.z - min[2]) / gridSize);
         }).Schedule(Dependency);
+
 
         // 创建网格 TODO: 使用 https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function 合并计算与创建网格
         var grid = new NativeMultiHashMap<int, int>(positions.Length, Allocator.TempJob);
@@ -206,6 +214,8 @@ public class FluidSPHSystem : SystemBase
         // Dependency = computeForceJob.Schedule(positions.Length, m_Concurrency, Dependency);
 
         positions.Dispose(Dependency);
+        min.Dispose(Dependency);
+        gridLength.Dispose(Dependency);
         grid.Dispose(Dependency);
         positionToGrid.Dispose(Dependency);
 
@@ -222,18 +232,18 @@ public class FluidSPHSystem : SystemBase
     {
     }
 
-    private static int HashPositionToGridIndex(float3 position, float3 min, float size, int3 gridLength)
+    private static int HashPositionToGridIndex(float3 position, NativeArray<float> min, float size, NativeArray<int> gridLength)
     {
         return XyzToGridIndex(
-            (int)math.floor((position.x - min.x) / size),
-            (int)math.floor((position.y - min.y) / size),
-            (int)math.floor((position.z - min.z) / size),
+            (int)math.floor((position.x - min[0]) / size),
+            (int)math.floor((position.y - min[1]) / size),
+            (int)math.floor((position.z - min[2]) / size),
             gridLength
         );
     }
 
-    private static int XyzToGridIndex(int x, int y, int z, int3 gridLength)
+    private static int XyzToGridIndex(int x, int y, int z, NativeArray<int> gridLength)
     {
-        return x + gridLength.x * y + gridLength.x * gridLength.y * z;
+        return x + gridLength[0] * y + gridLength[1] * gridLength[2] * z;
     }
 }
