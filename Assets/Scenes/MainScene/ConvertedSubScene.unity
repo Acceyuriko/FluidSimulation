@@ -436,6 +436,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   radius: 0.25
   density: 1
+  viscosity: 0.1
   gravity:
     x: 0
     y: -9.81
