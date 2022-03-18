@@ -1,7 +1,6 @@
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Physics;
-using Unity.Physics.Authoring;
 using Unity.Rendering;
 using Unity.Transforms;
 using UnityEngine;
@@ -13,7 +12,6 @@ public class FluidInitializeSystem : SystemBase
     private struct InitializeTag : IComponentData { }
 
     private EndInitializationEntityCommandBufferSystem m_EndInitializationECB;
-    private Entity m_ParticlePrefab;
 
     protected override void OnCreate()
     {
@@ -26,18 +24,10 @@ public class FluidInitializeSystem : SystemBase
 
     protected override void OnUpdate()
     {
-        if (m_ParticlePrefab == Entity.Null)
-        {
-            m_ParticlePrefab = GetSingleton<PrefabCollection>().ParticlePrefab;
-            return;
-        }
-
         var commandBuffer = m_EndInitializationECB.CreateCommandBuffer();
         commandBuffer.DestroyEntity(GetSingletonEntity<InitializeTag>());
 
-        var prefab = m_ParticlePrefab;
-
-        Dependency = Entities
+        Entities
             .WithoutBurst()
             .WithAll<FluidComponent>()
             .ForEach((Entity entity, in LocalToWorld localToWorld, in RenderBounds rbounds, in FluidComponent fluid) =>
@@ -46,18 +36,20 @@ public class FluidInitializeSystem : SystemBase
                 float4 min = new float4(math.mul(localToWorld.Value, new float4(rbounds.Value.Min, 1)));
                 float4 max = new float4(math.mul(localToWorld.Value, new float4(rbounds.Value.Max, 1)));
 
-                min.x += fluid.radius;
-                min.y += fluid.radius;
-                min.z += fluid.radius;
+                var setting = EntityManager.GetComponentData<FluidParticleComponent>(fluid.prefab);
 
-                max.x -= fluid.radius;
-                max.y -= fluid.radius;
-                max.z -= fluid.radius;
+                min.x += setting.radius;
+                min.y += setting.radius;
+                min.z += setting.radius;
+
+                max.x -= setting.radius;
+                max.y -= setting.radius;
+                max.z -= setting.radius;
 
                 bounds.SetMinMax(min.xyz, max.xyz);
 
-                float diameter = fluid.radius * 2;
-                float spacing = diameter * 0.98f;
+                float diameter = setting.radius * 2;
+                float spacing = diameter * 0.9f;
                 float halfSpacing = spacing * 0.5f;
 
                 int numX = (int)((bounds.size.x + halfSpacing) / spacing);
@@ -72,9 +64,7 @@ public class FluidInitializeSystem : SystemBase
                     {
                         for (int x = 0; x < numX; x++)
                         {
-                            var particle = commandBuffer.Instantiate(prefab);
-                            var volume = 4f / 3f * math.PI * math.pow(fluid.radius, 3);
-                            commandBuffer.AddComponent(particle, new Scale { Value = 2 * fluid.radius });
+                            var particle = commandBuffer.Instantiate(fluid.prefab);
                             commandBuffer.SetComponent(particle, new Translation
                             {
                                 Value = math.mul(localToWorld.Rotation,
@@ -85,49 +75,11 @@ public class FluidInitializeSystem : SystemBase
                                     )
                                 )
                             });
-                            commandBuffer.SetComponent(particle, PhysicsMass.CreateDynamic(
-                                new MassProperties
-                                {
-                                    MassDistribution = new MassDistribution
-                                    {
-                                        Transform = RigidTransform.identity,
-                                        InertiaTensor = new float3(0) // disable rotation
-                                    },
-                                    Volume = volume,
-                                    AngularExpansionFactor = 0f
-                                },
-                                volume * fluid.density
-                            ));
-                            commandBuffer.SetComponent(particle, new PhysicsCollider
-                            {
-                                Value = Unity.Physics.SphereCollider.Create(
-                                    new SphereGeometry
-                                    {
-                                        Center = float3.zero,
-                                        Radius = fluid.radius
-                                    },
-                                    new CollisionFilter {
-                                        BelongsTo = (uint)EPhysicsCagegoryNames.Particle,
-                                        CollidesWith = (uint)EPhysicsCagegoryNames.ParticleCollider
-                                    },
-                                    new Unity.Physics.Material { Friction = 0f, Restitution = 1f }
-                                )
-                            });
-                            commandBuffer.AddComponent(particle, new FluidParticleComponent
-                            {
-                                Fluid = entity,
-                                radius = fluid.radius,
-                                density = fluid.density,
-                                viscosity = fluid.viscosity,
-                                gravity = fluid.gravity,
-
-                                volume = volume,
-                            });
                         }
                     }
                 }
             })
-            .Schedule(Dependency);
+            .Run();
 
         m_EndInitializationECB.AddJobHandleForProducer(Dependency);
     }

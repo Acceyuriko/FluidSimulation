@@ -1,7 +1,7 @@
 using System;
 using Unity.Entities;
-using Unity.Mathematics;
 
+[GenerateAuthoringComponent]
 [Serializable]
 public struct FluidParticleComponent : IComponentData
 {
@@ -9,8 +9,6 @@ public struct FluidParticleComponent : IComponentData
 
     public float radius;
     public float density;
+    public float mass;
     public float viscosity;
-    public float3 gravity;
-
-    public float volume;
 }

@@ -1,18 +1,35 @@
-using System.Linq;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
-using Unity.Profiling;
+using Unity.Physics.Extensions;
+using Unity.Physics.Systems;
 using Unity.Transforms;
 using UnityEngine;
 
-[UpdateInGroup(typeof(SimulationSystemGroup))]
-[UpdateBefore(typeof(TransformSystemGroup))]
+[UpdateInGroup(typeof(FixedStepSimulationSystemGroup))]
+[UpdateBefore(typeof(BuildPhysicsWorld))]
 public class FluidSPHSystem : SystemBase
 {
+    [BurstCompile]
+    private struct FindGridSizeJob : IJobEntityBatch
+    {
+        public ComponentTypeHandle<FluidParticleComponent> fluidParticleType;
+        public NativeArray<float> gridSize;
+        public float kernelRadiusRate;
+
+        public void Execute(ArchetypeChunk batchInChunk, int batchIndex)
+        {
+            var particles = batchInChunk.GetNativeArray(fluidParticleType);
+            if (particles[0].radius < gridSize[0] / kernelRadiusRate)
+            {
+                gridSize[0] = particles[0].radius * kernelRadiusRate;
+            }
+        }
+    }
+
     [BurstCompile]
     private struct HashPositionJob : IJobParallelFor
     {
@@ -51,39 +68,101 @@ public class FluidSPHSystem : SystemBase
             var setting = particles[index];
             var kernelRadius = kernelRadiusRate * setting.radius;
             var kernelRadius2 = math.pow(kernelRadius, 2f);
-            var poly6Constant = setting.density * setting.volume * 315f / (64f * math.PI * math.pow(kernelRadius, 9f));
+            var poly6Constant = setting.mass * 315f / (64f * math.PI * math.pow(kernelRadius, 9f));
 
             for (int x = -1; x <= 1; x++)
             {
-                for (int y = -1; y <= -1; y++)
+                for (int y = -1; y <= 1; y++)
                 {
                     for (int z = -1; z <= 1; z++)
                     {
                         var neighborGridIndex = gridIndex + XyzToGridIndex(x, y, z, gridLength);
-                        using (new ProfilerMarker("before while").Auto())
+                        var found = hashMap.TryGetFirstValue(neighborGridIndex, out var j, out var iterator);
+                        while (found)
                         {
-                            var count = 0;
-                            var found = hashMap.TryGetFirstValue(neighborGridIndex, out var j, out var iterator);
-                            while (found)
+                            float distance2 = math.lengthsq(position - positions[j].Value);
+                            if (distance2 < kernelRadius2)
                             {
-                                float distanceSq = math.lengthsq(position - positions[j].Value);
-                                if (distanceSq < kernelRadius2)
-                                {
-                                    // 光滑核函数 poly6, \rho_i = m \Sigma{W_{poly6}
-                                    // 其中 W_poly6 = \frac{315}{64 \pi h^9} (h^2 - r^2)^3
-                                    density += poly6Constant * math.pow(kernelRadius2 - distanceSq, 3f);
-                                }
-                                found = hashMap.TryGetNextValue(out j, ref iterator);
-                                count++;
+                                // 光滑核函数 poly6, \rho_i = m \Sigma{W_{poly6}}
+                                // 其中 W_poly6 = \frac{315}{64 \pi h^9} (h^2 - r^2)^3
+                                density += poly6Constant * math.pow(kernelRadius2 - distance2, 3f);
                             }
+                            found = hashMap.TryGetNextValue(out j, ref iterator);
                         }
                     }
                 }
             }
 
             densities[index] = density;
-            // // 理想气体方程 p_i = k(\rho_i - \rho_0)，这里 k 取 2000
-            pressures[index] = 2000f * (density - setting.density);
+            // // 理想气体方程 p_i = k(\rho_i - \rho_0)，k 需要调整
+            pressures[index] = math.max(2000f * (density - setting.density), 0);
+        }
+    }
+
+
+    [BurstCompile]
+    private struct ComputeForceJob : IJobParallelFor
+    {
+        [ReadOnly] public NativeArray<Translation> positions;
+        [ReadOnly] public NativeArray<int> positionToGrid;
+        [ReadOnly] public NativeArray<FluidParticleComponent> particles;
+        [ReadOnly] public NativeArray<int> gridLength;
+        [ReadOnly] public float kernelRadiusRate;
+        [ReadOnly] public NativeMultiHashMap<int, int> hashMap;
+        [ReadOnly] public NativeArray<float> densities;
+        [ReadOnly] public NativeArray<float> pressures;
+        public NativeArray<float3> forces;
+
+
+        public void Execute(int index)
+        {
+            var gridIndex = positionToGrid[index];
+            var position = positions[index].Value;
+            var setting = particles[index];
+            float kernelRadius = kernelRadiusRate * setting.radius;
+
+            float density = densities[index];
+            float pressure = pressures[index];
+
+            float3 forcePressure = new float3();
+            float3 forceViscosity = new float3();
+
+            for (int x = -1; x <= 1; x++)
+            {
+                for (int y = -1; y <= 1; y++)
+                {
+                    for (int z = -1; z <= 1; z++)
+                    {
+                        var neighborGridIndex = gridIndex + XyzToGridIndex(x, y, z, gridLength);
+                        var found = hashMap.TryGetFirstValue(neighborGridIndex, out var j, out var iterator);
+                        while (found)
+                        {
+                            if (index != j)
+                            {
+                                float3 vij = positions[j].Value - position;
+                                float distance = math.length(vij);
+                                float densityj = densities[j];
+                                float pressurej = pressures[j];
+                                float massj = particles[j].mass;
+
+
+                                if (distance < kernelRadius)
+                                {
+                                    // f_{i}^{press} = - \rho_i \Sigma{ m_j (\frac{p_i}{\rho_i^2} + \frac{p_j}{\rho_j^2})\Delta{W_{spiky}}} 
+                                    // 其中 \Delta{W_{spiky}} = - \frac{45}{\pi h^6}(h - r)^2e_r
+                                    // e_r 表示 i -> j 的方向向量
+                                    forcePressure += density * massj * (pressure / math.pow(density, 2f) + pressurej / math.pow(densityj, 2f)) *
+                                        (-45f / (math.PI * math.pow(kernelRadius, 6f)) * math.pow(kernelRadius - distance, 2f)) *
+                                        math.normalize(vij);
+                                }
+                            }
+                            found = hashMap.TryGetNextValue(out j, ref iterator);
+                        }
+                    }
+                }
+            }
+
+            forces[index] = forcePressure + forceViscosity;
         }
     }
 
@@ -108,31 +187,19 @@ public class FluidSPHSystem : SystemBase
     {
         var positions = m_ParticleQuery.ToComponentDataArrayAsync<Translation>(Allocator.TempJob, out var positionHandle);
         var particles = m_ParticleQuery.ToComponentDataArrayAsync<FluidParticleComponent>(Allocator.TempJob, out var particleHandle);
-        var velocities = m_ParticleQuery.ToComponentDataArrayAsync<PhysicsVelocity>(Allocator.TempJob, out var velocityHandle);
-        var masses = m_ParticleQuery.ToComponentDataArrayAsync<PhysicsMass>(Allocator.TempJob, out var massHandle);
 
-        Dependency = JobHandle.CombineDependencies(
-            JobHandle.CombineDependencies(
-                positionHandle,
-                particleHandle,
-                velocityHandle
-            ),
-            massHandle
-        );
+        Dependency = JobHandle.CombineDependencies(positionHandle, particleHandle);
 
-        var gridSize = 1f;
-        var kernelRadiusRate = m_KernelRadiusRate;
+        var gridSize = new NativeArray<float>(1, Allocator.TempJob);
+        gridSize[0] = float.MaxValue;
 
-        Entities
-            .WithAll<FluidComponent>()
-            .ForEach((in FluidComponent fluid) =>
-            {
-                var size = fluid.radius * kernelRadiusRate;
-                if (size < gridSize)
-                {
-                    gridSize = size;
-                }
-            }).Run();
+        var findGridSizeJob = new FindGridSizeJob
+        {
+            fluidParticleType = GetComponentTypeHandle<FluidParticleComponent>(),
+            gridSize = gridSize,
+            kernelRadiusRate = m_KernelRadiusRate,
+        };
+        Dependency = findGridSizeJob.Schedule(m_ParticleQuery, Dependency);
 
         // 计算网格布局
         var min = new NativeArray<float>(3, Allocator.TempJob);
@@ -153,19 +220,20 @@ public class FluidSPHSystem : SystemBase
                 if (positions[i].Value.z > max.z) max.z = positions[i].Value.z;
             }
 
-            min[0] = math.floor(min[0] / gridSize) * gridSize;
-            min[1] = math.floor(min[1] / gridSize) * gridSize;
-            min[2] = math.floor(min[2] / gridSize) * gridSize;
+            min[0] = math.floor(min[0] / gridSize[0]) * gridSize[0];
+            min[1] = math.floor(min[1] / gridSize[0]) * gridSize[0];
+            min[2] = math.floor(min[2] / gridSize[0]) * gridSize[0];
             // 按左闭右开划分网格，因此最大值需要加上额外一个网格
-            max.x = math.ceil(max.x / gridSize) * gridSize + 1f;
-            max.y = math.ceil(max.y / gridSize) * gridSize + 1f;
-            max.z = math.ceil(max.z / gridSize) * gridSize + 1f;
+            max.x = math.ceil(max.x / gridSize[0]) * gridSize[0] + 1f;
+            max.y = math.ceil(max.y / gridSize[0]) * gridSize[0] + 1f;
+            max.z = math.ceil(max.z / gridSize[0]) * gridSize[0] + 1f;
 
-            gridLength[0] = (int)math.ceil((max.x - min[0]) / gridSize);
-            gridLength[1] = (int)math.ceil((max.y - min[1]) / gridSize);
-            gridLength[2] = (int)math.ceil((max.z - min[2]) / gridSize);
+            gridLength[0] = (int)math.ceil((max.x - min[0]) / gridSize[0]);
+            gridLength[1] = (int)math.ceil((max.y - min[1]) / gridSize[0]);
+            gridLength[2] = (int)math.ceil((max.z - min[2]) / gridSize[0]);
         }).Schedule(Dependency);
 
+        Dependency.Complete();
 
         // 创建网格 TODO: 使用 https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function 合并计算与创建网格
         var grid = new NativeMultiHashMap<int, int>(positions.Length, Allocator.TempJob);
@@ -175,7 +243,7 @@ public class FluidSPHSystem : SystemBase
             positions = positions,
             positionToGrid = positionToGrid,
             min = min,
-            size = gridSize,
+            size = gridSize[0],
             gridLength = gridLength,
             hashMap = grid.AsParallelWriter(),
         };
@@ -196,23 +264,36 @@ public class FluidSPHSystem : SystemBase
             densities = densities,
             pressures = pressures,
         };
-        Dependency = computeDensityAndPressureJob.Schedule(positions.Length, 1, Dependency);
+        Dependency = computeDensityAndPressureJob.Schedule(positions.Length, m_Concurrency, Dependency);
 
         var forces = new NativeArray<float3>(positions.Length, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
 
-        // 计算力并应用
-        // var computeForceJob = new ComputeForceJob
-        // {
-        //     positions = positions,
-        //     min = min,
-        //     size = gridSize,
-        //     gridLength = gridLength,
-        //     hashMap = grid,
-        //     densities = densities,
-        //     pressures = pressures,
-        // };
-        // Dependency = computeForceJob.Schedule(positions.Length, m_Concurrency, Dependency);
+        // 计算力
+        var computeForceJob = new ComputeForceJob
+        {
+            positions = positions,
+            positionToGrid = positionToGrid,
+            particles = particles,
+            gridLength = gridLength,
+            kernelRadiusRate = m_KernelRadiusRate,
+            hashMap = grid,
+            densities = densities,
+            pressures = pressures,
+            forces = forces,
+        };
+        Dependency = computeForceJob.Schedule(positions.Length, m_Concurrency, Dependency);
 
+        var deltaTime = Time.DeltaTime;
+
+        Dependency = Entities
+            .WithAll<FluidParticleComponent>()
+            .ForEach((int entityInQueryIndex, ref PhysicsVelocity velocity, in PhysicsMass mass) =>
+            {
+                velocity.ApplyLinearImpulse(mass, forces[entityInQueryIndex] * deltaTime);
+            })
+            .ScheduleParallel(Dependency);
+
+        gridSize.Dispose(Dependency);
         positions.Dispose(Dependency);
         min.Dispose(Dependency);
         gridLength.Dispose(Dependency);
@@ -222,10 +303,7 @@ public class FluidSPHSystem : SystemBase
         pressures.Dispose(Dependency);
         densities.Dispose(Dependency);
         particles.Dispose(Dependency);
-
         forces.Dispose(Dependency);
-        velocities.Dispose(Dependency);
-        masses.Dispose(Dependency);
     }
 
     protected override void OnDestroy()
