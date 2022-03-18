@@ -142,7 +142,7 @@ MonoBehaviour:
     m_Restitution:
       m_Override: 0
       m_Value:
-        Value: 0.1
+        Value: 0
         CombineMode: 2
     m_BelongsToCategories:
       m_Override: 0
@@ -289,7 +289,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d381593cc28c07c4fbdc677c1b36e167, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  Fluid: {fileID: 0}
   radius: 0.5
   density: 1000
   mass: 1000

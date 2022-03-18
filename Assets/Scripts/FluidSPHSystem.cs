@@ -1,3 +1,4 @@
+using JetBrains.Annotations;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Entities;
@@ -16,16 +17,17 @@ public class FluidSPHSystem : SystemBase
     [BurstCompile]
     private struct FindGridSizeJob : IJobEntityBatch
     {
-        public ComponentTypeHandle<FluidParticleComponent> fluidParticleType;
+        public ComponentTypeHandle<PhysicsCollider> physicsColliderType;
         public NativeArray<float> gridSize;
         public float kernelRadiusRate;
 
         public void Execute(ArchetypeChunk batchInChunk, int batchIndex)
         {
-            var particles = batchInChunk.GetNativeArray(fluidParticleType);
-            if (particles[0].radius < gridSize[0] / kernelRadiusRate)
+            var colliders = batchInChunk.GetNativeArray(physicsColliderType);
+            var radius = ColliderUtil.GetColliderRadius(colliders[0]);
+            if (radius < gridSize[0] / kernelRadiusRate)
             {
-                gridSize[0] = particles[0].radius * kernelRadiusRate;
+                gridSize[0] = radius * kernelRadiusRate;
             }
         }
     }
@@ -52,6 +54,8 @@ public class FluidSPHSystem : SystemBase
     private struct ComputeDensityAndPressureJob : IJobParallelFor
     {
         [ReadOnly] public NativeArray<Translation> positions;
+        [ReadOnly] public NativeArray<PhysicsCollider> colliders;
+        [ReadOnly] public NativeArray<PhysicsMass> masses;
         [ReadOnly] public NativeArray<int> positionToGrid;
         [ReadOnly] public NativeArray<FluidParticleComponent> particles;
         [ReadOnly] public NativeArray<int> gridLength;
@@ -66,9 +70,9 @@ public class FluidSPHSystem : SystemBase
             var gridIndex = positionToGrid[index];
             var position = positions[index].Value;
             var setting = particles[index];
-            var kernelRadius = kernelRadiusRate * setting.radius;
+            float kernelRadius = ColliderUtil.GetColliderRadius(colliders[index]) * kernelRadiusRate;
             var kernelRadius2 = math.pow(kernelRadius, 2f);
-            var poly6Constant = setting.mass * 315f / (64f * math.PI * math.pow(kernelRadius, 9f));
+            var poly6Constant = 1f / masses[index].InverseMass * 315f / (64f * math.PI * math.pow(kernelRadius, 9f));
 
             for (int x = -1; x <= 1; x++)
             {
@@ -104,6 +108,8 @@ public class FluidSPHSystem : SystemBase
     private struct ComputeForceJob : IJobParallelFor
     {
         [ReadOnly] public NativeArray<Translation> positions;
+        [ReadOnly] public NativeArray<PhysicsCollider> colliders;
+        [ReadOnly] public NativeArray<PhysicsMass> masses;
         [ReadOnly] public NativeArray<int> positionToGrid;
         [ReadOnly] public NativeArray<FluidParticleComponent> particles;
         [ReadOnly] public NativeArray<int> gridLength;
@@ -118,8 +124,7 @@ public class FluidSPHSystem : SystemBase
         {
             var gridIndex = positionToGrid[index];
             var position = positions[index].Value;
-            var setting = particles[index];
-            float kernelRadius = kernelRadiusRate * setting.radius;
+            float kernelRadius = kernelRadiusRate * ColliderUtil.GetColliderRadius(colliders[index]);
 
             float density = densities[index];
             float pressure = pressures[index];
@@ -143,7 +148,7 @@ public class FluidSPHSystem : SystemBase
                                 float distance = math.length(vij);
                                 float densityj = densities[j];
                                 float pressurej = pressures[j];
-                                float massj = particles[j].mass;
+                                float massj = 1f / masses[j].InverseMass;
 
 
                                 if (distance < kernelRadius)
@@ -177,7 +182,13 @@ public class FluidSPHSystem : SystemBase
     {
         m_ParticleQuery = GetEntityQuery(new EntityQueryDesc
         {
-            All = new ComponentType[] { typeof(FluidParticleComponent), typeof(Translation), typeof(PhysicsVelocity), typeof(PhysicsMass) }
+            All = new ComponentType[] {
+                typeof(FluidParticleComponent),
+                typeof(Translation),
+                typeof(PhysicsVelocity),
+                typeof(PhysicsMass),
+                typeof(PhysicsCollider),
+            }
         });
 
         RequireForUpdate(m_ParticleQuery);
@@ -187,15 +198,25 @@ public class FluidSPHSystem : SystemBase
     {
         var positions = m_ParticleQuery.ToComponentDataArrayAsync<Translation>(Allocator.TempJob, out var positionHandle);
         var particles = m_ParticleQuery.ToComponentDataArrayAsync<FluidParticleComponent>(Allocator.TempJob, out var particleHandle);
+        var physicsMasses = m_ParticleQuery.ToComponentDataArrayAsync<PhysicsMass>(Allocator.TempJob, out var physicsMassHandle);
+        var physicsColliders = m_ParticleQuery.ToComponentDataArrayAsync<PhysicsCollider>(Allocator.TempJob, out var physicsColliderHandle);
 
-        Dependency = JobHandle.CombineDependencies(positionHandle, particleHandle);
+        Dependency = JobHandle.CombineDependencies(
+            positionHandle,
+            particleHandle,
+            JobHandle.CombineDependencies(
+                physicsMassHandle,
+                physicsColliderHandle
+            )
+        );
+
 
         var gridSize = new NativeArray<float>(1, Allocator.TempJob);
         gridSize[0] = float.MaxValue;
 
         var findGridSizeJob = new FindGridSizeJob
         {
-            fluidParticleType = GetComponentTypeHandle<FluidParticleComponent>(),
+            physicsColliderType = GetComponentTypeHandle<PhysicsCollider>(),
             gridSize = gridSize,
             kernelRadiusRate = m_KernelRadiusRate,
         };
@@ -257,6 +278,8 @@ public class FluidSPHSystem : SystemBase
         {
             positions = positions,
             positionToGrid = positionToGrid,
+            masses = physicsMasses,
+            colliders = physicsColliders,
             particles = particles,
             gridLength = gridLength,
             kernelRadiusRate = m_KernelRadiusRate,
@@ -273,6 +296,8 @@ public class FluidSPHSystem : SystemBase
         {
             positions = positions,
             positionToGrid = positionToGrid,
+            masses = physicsMasses,
+            colliders = physicsColliders,
             particles = particles,
             gridLength = gridLength,
             kernelRadiusRate = m_KernelRadiusRate,
@@ -295,6 +320,9 @@ public class FluidSPHSystem : SystemBase
 
         gridSize.Dispose(Dependency);
         positions.Dispose(Dependency);
+        particles.Dispose(Dependency);
+        physicsColliders.Dispose(Dependency);
+        physicsMasses.Dispose(Dependency);
         min.Dispose(Dependency);
         gridLength.Dispose(Dependency);
         grid.Dispose(Dependency);
@@ -302,7 +330,6 @@ public class FluidSPHSystem : SystemBase
 
         pressures.Dispose(Dependency);
         densities.Dispose(Dependency);
-        particles.Dispose(Dependency);
         forces.Dispose(Dependency);
     }
 

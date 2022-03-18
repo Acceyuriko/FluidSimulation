@@ -36,19 +36,20 @@ public class FluidInitializeSystem : SystemBase
                 float4 min = new float4(math.mul(localToWorld.Value, new float4(rbounds.Value.Min, 1)));
                 float4 max = new float4(math.mul(localToWorld.Value, new float4(rbounds.Value.Max, 1)));
 
-                var setting = EntityManager.GetComponentData<FluidParticleComponent>(fluid.prefab);
+                var collider = EntityManager.GetComponentData<PhysicsCollider>(fluid.prefab);
+                var radius = ColliderUtil.GetColliderRadius(collider);
 
-                min.x += setting.radius;
-                min.y += setting.radius;
-                min.z += setting.radius;
+                min.x += radius;
+                min.y += radius;
+                min.z += radius;
 
-                max.x -= setting.radius;
-                max.y -= setting.radius;
-                max.z -= setting.radius;
+                max.x -= radius;
+                max.y -= radius;
+                max.z -= radius;
 
                 bounds.SetMinMax(min.xyz, max.xyz);
 
-                float diameter = setting.radius * 2;
+                float diameter = radius * 2;
                 float spacing = diameter * 0.9f;
                 float halfSpacing = spacing * 0.5f;
 
@@ -78,6 +79,8 @@ public class FluidInitializeSystem : SystemBase
                         }
                     }
                 }
+
+                commandBuffer.DestroyEntity(entity);
             })
             .Run();
 
