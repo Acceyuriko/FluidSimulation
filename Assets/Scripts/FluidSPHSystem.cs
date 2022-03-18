@@ -1,4 +1,3 @@
-using JetBrains.Annotations;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Entities;
@@ -17,14 +16,14 @@ public class FluidSPHSystem : SystemBase
     [BurstCompile]
     private struct FindGridSizeJob : IJobEntityBatch
     {
-        public ComponentTypeHandle<PhysicsCollider> physicsColliderType;
+        public ComponentTypeHandle<FluidParticleComponent> particleTypeHandle;
         public NativeArray<float> gridSize;
         public float kernelRadiusRate;
 
         public void Execute(ArchetypeChunk batchInChunk, int batchIndex)
         {
-            var colliders = batchInChunk.GetNativeArray(physicsColliderType);
-            var radius = ColliderUtil.GetColliderRadius(colliders[0]);
+            var settings = batchInChunk.GetNativeArray(particleTypeHandle);
+            var radius = settings[0].radius;
             if (radius < gridSize[0] / kernelRadiusRate)
             {
                 gridSize[0] = radius * kernelRadiusRate;
@@ -70,7 +69,7 @@ public class FluidSPHSystem : SystemBase
             var gridIndex = positionToGrid[index];
             var position = positions[index].Value;
             var setting = particles[index];
-            float kernelRadius = ColliderUtil.GetColliderRadius(colliders[index]) * kernelRadiusRate;
+            float kernelRadius = setting.radius * kernelRadiusRate;
             var kernelRadius2 = math.pow(kernelRadius, 2f);
             var poly6Constant = 1f / masses[index].InverseMass * 315f / (64f * math.PI * math.pow(kernelRadius, 9f));
 
@@ -98,8 +97,8 @@ public class FluidSPHSystem : SystemBase
             }
 
             densities[index] = density;
-            // // 理想气体方程 p_i = k(\rho_i - \rho_0)，k 需要调整
-            pressures[index] = math.max(2000f * (density - setting.density), 0);
+            // 理想气体方程 p_i = k(\rho_i - \rho_0)
+            pressures[index] = math.max(setting.gasConstant * (density - setting.density), 0);
         }
     }
 
@@ -110,6 +109,7 @@ public class FluidSPHSystem : SystemBase
         [ReadOnly] public NativeArray<Translation> positions;
         [ReadOnly] public NativeArray<PhysicsCollider> colliders;
         [ReadOnly] public NativeArray<PhysicsMass> masses;
+        [ReadOnly] public NativeArray<PhysicsVelocity> velocities;
         [ReadOnly] public NativeArray<int> positionToGrid;
         [ReadOnly] public NativeArray<FluidParticleComponent> particles;
         [ReadOnly] public NativeArray<int> gridLength;
@@ -124,13 +124,16 @@ public class FluidSPHSystem : SystemBase
         {
             var gridIndex = positionToGrid[index];
             var position = positions[index].Value;
-            float kernelRadius = kernelRadiusRate * ColliderUtil.GetColliderRadius(colliders[index]);
+            float kernelRadius = particles[index].radius * kernelRadiusRate;
 
             float density = densities[index];
             float pressure = pressures[index];
+            float viscosity = particles[index].viscosity;
+            float3 velocity = velocities[index].Linear;
 
             float3 forcePressure = new float3();
             float3 forceViscosity = new float3();
+            float3 forceGravity = new float3(0, -9.81f, 0) * density;
 
             for (int x = -1; x <= 1; x++)
             {
@@ -144,21 +147,26 @@ public class FluidSPHSystem : SystemBase
                         {
                             if (index != j)
                             {
-                                float3 vij = positions[j].Value - position;
+                                float3 vij = position - positions[j].Value;
                                 float distance = math.length(vij);
                                 float densityj = densities[j];
                                 float pressurej = pressures[j];
                                 float massj = 1f / masses[j].InverseMass;
-
+                                float3 velocityj = velocities[j].Linear;
 
                                 if (distance < kernelRadius)
                                 {
                                     // f_{i}^{press} = - \rho_i \Sigma{ m_j (\frac{p_i}{\rho_i^2} + \frac{p_j}{\rho_j^2})\Delta{W_{spiky}}} 
                                     // 其中 \Delta{W_{spiky}} = - \frac{45}{\pi h^6}(h - r)^2e_r
-                                    // e_r 表示 i -> j 的方向向量
-                                    forcePressure += density * massj * (pressure / math.pow(density, 2f) + pressurej / math.pow(densityj, 2f)) *
+                                    // e_r 表示 i - j 的单位向量
+                                    forcePressure += -density * massj * (pressure / math.pow(density, 2f) + pressurej / math.pow(densityj, 2f)) *
                                         (-45f / (math.PI * math.pow(kernelRadius, 6f)) * math.pow(kernelRadius - distance, 2f)) *
                                         math.normalize(vij);
+
+                                    // f_i^{visco} = \frac{\mu}{\rho_i}\Sigma{m_j(u_j - u_i)}\Delta^2W_{visco}
+                                    // 其中 \Delta^2W_{visco}\Delta^2W_{visco} = \frac{45}{\pi h^6}(h - r)
+                                    forceViscosity += viscosity / density * massj * (velocityj - velocity) *
+                                        45f / (math.PI * math.pow(kernelRadius, 6f)) * (kernelRadius - distance);
                                 }
                             }
                             found = hashMap.TryGetNextValue(out j, ref iterator);
@@ -167,7 +175,7 @@ public class FluidSPHSystem : SystemBase
                 }
             }
 
-            forces[index] = forcePressure + forceViscosity;
+            forces[index] = forcePressure + forceViscosity + forceGravity;
         }
     }
 
@@ -200,13 +208,15 @@ public class FluidSPHSystem : SystemBase
         var particles = m_ParticleQuery.ToComponentDataArrayAsync<FluidParticleComponent>(Allocator.TempJob, out var particleHandle);
         var physicsMasses = m_ParticleQuery.ToComponentDataArrayAsync<PhysicsMass>(Allocator.TempJob, out var physicsMassHandle);
         var physicsColliders = m_ParticleQuery.ToComponentDataArrayAsync<PhysicsCollider>(Allocator.TempJob, out var physicsColliderHandle);
+        var physicsVelocities = m_ParticleQuery.ToComponentDataArrayAsync<PhysicsVelocity>(Allocator.TempJob, out var physicsVelocityHandle);
 
         Dependency = JobHandle.CombineDependencies(
             positionHandle,
             particleHandle,
             JobHandle.CombineDependencies(
                 physicsMassHandle,
-                physicsColliderHandle
+                physicsColliderHandle,
+                physicsVelocityHandle
             )
         );
 
@@ -216,7 +226,7 @@ public class FluidSPHSystem : SystemBase
 
         var findGridSizeJob = new FindGridSizeJob
         {
-            physicsColliderType = GetComponentTypeHandle<PhysicsCollider>(),
+            particleTypeHandle = GetComponentTypeHandle<FluidParticleComponent>(),
             gridSize = gridSize,
             kernelRadiusRate = m_KernelRadiusRate,
         };
@@ -298,6 +308,7 @@ public class FluidSPHSystem : SystemBase
             positionToGrid = positionToGrid,
             masses = physicsMasses,
             colliders = physicsColliders,
+            velocities = physicsVelocities,
             particles = particles,
             gridLength = gridLength,
             kernelRadiusRate = m_KernelRadiusRate,
@@ -314,7 +325,8 @@ public class FluidSPHSystem : SystemBase
             .WithAll<FluidParticleComponent>()
             .ForEach((int entityInQueryIndex, ref PhysicsVelocity velocity, in PhysicsMass mass) =>
             {
-                velocity.ApplyLinearImpulse(mass, forces[entityInQueryIndex] * deltaTime);
+                // SPH 中 F_sph = \rho a ， 量纲与一般的 F 不同，因此需要转换。 F_unity = F_sph * mass / \rho
+                velocity.ApplyLinearImpulse(mass, forces[entityInQueryIndex] / densities[entityInQueryIndex] / mass.InverseMass * deltaTime);
             })
             .ScheduleParallel(Dependency);
 
@@ -323,6 +335,7 @@ public class FluidSPHSystem : SystemBase
         particles.Dispose(Dependency);
         physicsColliders.Dispose(Dependency);
         physicsMasses.Dispose(Dependency);
+        physicsVelocities.Dispose(Dependency);
         min.Dispose(Dependency);
         gridLength.Dispose(Dependency);
         grid.Dispose(Dependency);

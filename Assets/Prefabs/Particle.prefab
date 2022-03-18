@@ -30,7 +30,7 @@ Transform:
   m_GameObject: {fileID: 4711306451452352764}
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_LocalScale: {x: 0.5, y: 0.5, z: 0.5}
   m_Children: []
   m_Father: {fileID: 0}
   m_RootOrder: 0
@@ -142,7 +142,7 @@ MonoBehaviour:
     m_Restitution:
       m_Override: 0
       m_Value:
-        Value: 0
+        Value: 0.5
         CombineMode: 2
     m_BelongsToCategories:
       m_Override: 0
@@ -241,7 +241,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   m_MotionType: 0
   m_Smoothing: 0
-  m_Mass: 1000
+  m_Mass: 125
   m_LinearDamping: 0
   m_AngularDamping: 0
   m_InitialLinearVelocity:
@@ -252,7 +252,7 @@ MonoBehaviour:
     x: 0
     y: 0
     z: 0
-  m_GravityFactor: 1
+  m_GravityFactor: 0
   m_OverrideDefaultMassDistribution: 0
   m_CenterOfMass:
     x: 0
@@ -289,7 +289,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d381593cc28c07c4fbdc677c1b36e167, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  radius: 0.5
+  radius: 0.25
   density: 1000
-  mass: 1000
-  viscosity: 0.1
+  viscosity: 8
+  gasConstant: 16

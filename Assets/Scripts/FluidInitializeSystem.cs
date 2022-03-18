@@ -36,8 +36,7 @@ public class FluidInitializeSystem : SystemBase
                 float4 min = new float4(math.mul(localToWorld.Value, new float4(rbounds.Value.Min, 1)));
                 float4 max = new float4(math.mul(localToWorld.Value, new float4(rbounds.Value.Max, 1)));
 
-                var collider = EntityManager.GetComponentData<PhysicsCollider>(fluid.prefab);
-                var radius = ColliderUtil.GetColliderRadius(collider);
+                var radius = EntityManager.GetComponentData<FluidParticleComponent>(fluid.prefab).radius;
 
                 min.x += radius;
                 min.y += radius;
