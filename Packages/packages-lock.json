@@ -172,6 +172,15 @@
       },
       "url": "https://packages.unity.com"
     },
+    "com.unity.platforms.android": {
+      "version": "0.10.0-preview.10",
+      "depth": 0,
+      "source": "registry",
+      "dependencies": {
+        "com.unity.platforms": "0.10.0-preview.10"
+      },
+      "url": "https://packages.unity.com"
+    },
     "com.unity.properties": {
       "version": "1.6.0-preview",
       "depth": 1,
