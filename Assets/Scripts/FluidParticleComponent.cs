@@ -6,7 +6,7 @@ using Unity.Entities;
 public struct FluidParticleComponent : IComponentData
 {
     public float radius;
-    public float density;
+    public float restDensity;
     public float viscosity;
     public float gasConstant;
 }
