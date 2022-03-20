@@ -326,7 +326,7 @@ public class FluidSPHSystem : SystemBase
             .ForEach((int entityInQueryIndex, ref PhysicsVelocity velocity, in PhysicsMass mass) =>
             {
                 // SPH 中 F_sph = \rho a ， 量纲与一般的 F 不同，因此需要转换。 F_unity = F_sph * mass / \rho
-                velocity.ApplyLinearImpulse(mass, forces[entityInQueryIndex] / densities[entityInQueryIndex] / mass.InverseMass * deltaTime);
+                // velocity.ApplyLinearImpulse(mass, forces[entityInQueryIndex] / densities[entityInQueryIndex] / mass.InverseMass * deltaTime);
             })
             .ScheduleParallel(Dependency);
 

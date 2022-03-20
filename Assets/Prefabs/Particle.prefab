@@ -291,5 +291,5 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   radius: 0.25
   density: 1000
-  viscosity: 8
-  gasConstant: 16
+  viscosity: 256
+  gasConstant: 512
