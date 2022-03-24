@@ -5,7 +5,7 @@
             "$type": "Unity.Build.Common.GeneralSettings, Unity.Build",
             "ProductName": "FluidSimulation",
             "CompanyName": "Acceyuriko",
-            "Version": "1.0.0.0"
+            "Version": "1.0.0"
         },
         {
             "$type": "Unity.Build.Common.SceneList, Unity.Build",
@@ -21,14 +21,8 @@
         {
             "$type": "Unity.Build.Classic.ClassicBuildProfile, Unity.Build.Classic",
             "$version": 1,
-            "Platform": "android",
+            "Platform": "win",
             "Configuration": 3
-        },
-        {
-            "$type": "Unity.Build.Classic.ClassicScriptingSettings, Unity.Build.Classic",
-            "ScriptingBackend": 1,
-            "Il2CppCompilerConfiguration": 1,
-            "UseIncrementalGC": false
         }
     ]
 }

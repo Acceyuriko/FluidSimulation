@@ -288,6 +288,24 @@ public class FluidSPHSystem : SystemBase
 
     protected override void OnUpdate()
     {
+        if (SystemInfo.supportsComputeShaders)
+        {
+            UpdateByGPU();
+        }
+        else
+        {
+            UpdateByCPU();
+        }
+    }
+
+    protected override void OnDestroy()
+    {
+    }
+
+    private void UpdateByCPU()
+    {
+        World.GetOrCreateSystem<FixedStepSimulationSystemGroup>().Timestep = 1f / 30f;
+
         var positions = m_ParticleQuery.ToComponentDataArrayAsync<Translation>(Allocator.TempJob, out var positionHandle);
         var particles = m_ParticleQuery.ToComponentDataArrayAsync<FluidParticleComponent>(Allocator.TempJob, out var particleHandle);
         var physicsMasses = m_ParticleQuery.ToComponentDataArrayAsync<PhysicsMass>(Allocator.TempJob, out var physicsMassHandle);
@@ -442,10 +460,12 @@ public class FluidSPHSystem : SystemBase
         pressures.Dispose(Dependency);
         densities.Dispose(Dependency);
         forces.Dispose(Dependency);
+
     }
 
-    protected override void OnDestroy()
+    private void UpdateByGPU()
     {
+
     }
 
     private static int3 Quantize(float3 position, float size)
