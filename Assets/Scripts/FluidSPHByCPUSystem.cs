@@ -261,16 +261,11 @@ public class FluidSPHByCPUSystem : SystemBase
 
     protected override void OnCreate()
     {
-        if (SystemInfo.supportsComputeShaders)
-        {
-            Enabled = false;
-            return;
-        }
-
         m_ParticleQuery = GetEntityQuery(FluidSPHUtils.ParticleQueryComponentTypes);
         m_BoundaryQuery = GetEntityQuery(FluidSPHUtils.BoundaryQueryComponentTypes);
 
         RequireForUpdate(m_ParticleQuery);
+        RequireSingletonForUpdate<SimulationSettings>();
     }
 
     protected override void OnDestroy()
@@ -279,6 +274,11 @@ public class FluidSPHByCPUSystem : SystemBase
 
     protected override void OnUpdate()
     {
+        if (SystemInfo.supportsComputeShaders && GetSingleton<SimulationSettings>().UseGPU)
+        {
+            Enabled = false;
+            return;
+        }
         World.GetOrCreateSystem<FixedStepSimulationSystemGroup>().Timestep = 1f / 30f;
 
         var data = FluidSPHUtils.InitializeData(m_ParticleQuery, m_BoundaryQuery, GetComponentTypeHandle<FluidParticleComponent>(true));
@@ -344,7 +344,6 @@ public class FluidSPHByCPUSystem : SystemBase
         Dependency = applyForceJob.ScheduleParallel(m_ParticleQuery, m_Concurrency, Dependency);
 
         FluidSPHUtils.Dispose(data, Dependency);
-
         pressures.Dispose(Dependency);
         densities.Dispose(Dependency);
         forces.Dispose(Dependency);
