@@ -5,7 +5,7 @@ using Unity.Physics;
 using Unity.Transforms;
 using UnityEngine;
 
-public class FluidSPHByGPUSystem : SystemBase
+public partial class FluidSPHByGPUSystem : SystemBase
 {
     private EntityQuery m_ParticleQuery;
     private EntityQuery m_BoundaryQuery;

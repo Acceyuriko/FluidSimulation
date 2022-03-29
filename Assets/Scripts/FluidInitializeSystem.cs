@@ -6,7 +6,7 @@ using UnityEngine;
 
 [UpdateInGroup(typeof(InitializationSystemGroup))]
 [UpdateBefore(typeof(EndInitializationEntityCommandBufferSystem))]
-public class FluidInitializeSystem : SystemBase
+public partial class FluidInitializeSystem : SystemBase
 {
     private EndInitializationEntityCommandBufferSystem m_EndInitializationECB;
 

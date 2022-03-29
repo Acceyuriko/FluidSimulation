@@ -10,7 +10,7 @@ using UnityEngine;
 
 [UpdateInGroup(typeof(FixedStepSimulationSystemGroup))]
 [UpdateBefore(typeof(BuildPhysicsWorld))]
-public class FluidSPHByCPUSystem : SystemBase
+public partial class FluidSPHByCPUSystem : SystemBase
 {
     [BurstCompile]
     private struct FindGridSizeJob : IJobEntityBatch
@@ -341,7 +341,7 @@ public class FluidSPHByCPUSystem : SystemBase
             massTypeHandle = GetComponentTypeHandle<PhysicsMass>(true),
             velocityTypeHandle = GetComponentTypeHandle<PhysicsVelocity>(),
         };
-        Dependency = applyForceJob.ScheduleParallel(m_ParticleQuery, m_Concurrency, Dependency);
+        Dependency = applyForceJob.ScheduleParallel(m_ParticleQuery, Dependency);
 
         FluidSPHUtils.Dispose(data, Dependency);
         pressures.Dispose(Dependency);

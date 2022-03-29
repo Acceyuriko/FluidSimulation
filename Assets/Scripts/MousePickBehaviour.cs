@@ -84,7 +84,7 @@ namespace Unity.Physics.Extensions
 
     // Attaches a virtual spring to the picked entity
     [UpdateInGroup(typeof(SimulationSystemGroup))]
-    public class MousePickSystem : SystemBase
+    public partial class MousePickSystem : SystemBase
     {
         const float k_MaxDistance = 100.0f;
 
@@ -166,6 +166,11 @@ namespace Unity.Physics.Extensions
             SpringDatas.Dispose();
         }
 
+        protected override void OnStartRunning()
+        {
+            m_BuildPhysicsWorldSystem.RegisterPhysicsRuntimeSystemReadOnly();
+        }
+
         protected override void OnUpdate()
         {
             if (m_MouseGroup.CalculateEntityCount() == 0)
@@ -173,7 +178,7 @@ namespace Unity.Physics.Extensions
                 return;
             }
 
-            var handle = JobHandle.CombineDependencies(Dependency, m_BuildPhysicsWorldSystem.GetOutputDependency());
+            var handle = Dependency;
 
             if (Input.GetMouseButtonDown(0) && (Camera.main != null))
             {
@@ -223,7 +228,7 @@ namespace Unity.Physics.Extensions
     // Applies any mouse spring as a change in velocity on the entity's motion component
     [UpdateInGroup(typeof(FixedStepSimulationSystemGroup))]
     [UpdateBefore(typeof(BuildPhysicsWorld))]
-    public class MouseSpringSystem : SystemBase
+    public partial class MouseSpringSystem : SystemBase
     {
         EntityQuery m_MouseGroup;
         MousePickSystem m_PickSystem;
