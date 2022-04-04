@@ -20,11 +20,13 @@ public partial class FluidSPHByGPUSystem : SystemBase
 
     protected override void OnUpdate()
     {
-        if (!SystemInfo.supportsComputeShaders || !GetSingleton<SimulationSettings>().UseGPU)
+        var settings = GetSingleton<SimulationSettings>();
+        if (!SystemInfo.supportsComputeShaders || settings.UseGPU)
         {
             Enabled = false;
             return;
         }
+        World.GetOrCreateSystem<FixedStepSimulationSystemGroup>().Timestep = 1f / settings.FPS;
     }
 
     protected override void OnDestroy()

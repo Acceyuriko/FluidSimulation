@@ -276,6 +276,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   UseGPU: 0
+  FPS: 60
 --- !u!1001 &539954247
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -872,6 +873,7 @@ MonoBehaviour:
     x: 0.4
     y: 0.4
     z: 0.4
+  m_WorldIndex: 0
   m_CustomTags:
     Tag00: 0
     Tag01: 0

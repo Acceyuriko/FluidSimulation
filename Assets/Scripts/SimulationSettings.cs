@@ -6,4 +6,5 @@ using Unity.Entities;
 public struct SimulationSettings : IComponentData
 {
     public bool UseGPU;
+    public float FPS;
 }

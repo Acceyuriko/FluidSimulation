@@ -49,28 +49,12 @@ public partial class FluidSPHByCPUSystem : SystemBase
         public void Execute(int index)
         {
             float density = 0f;
-            float3 position;
-            float radius, mass, gasConstant, restDensity;
-
-            if (index >= positions.Length)
-            {
-                var particle = boundaryParticles[index - positions.Length];
-                position = boundaryPositions[index - positions.Length].Value;
-                radius = particle.radius;
-                mass = particle.mass;
-                gasConstant = particle.gasConstant;
-                restDensity = particle.restDensity;
-            }
-            else
-            {
-                var particle = particles[index];
-                position = positions[index].Value;
-                radius = particle.radius;
-                mass = 1f / masses[index].InverseMass;
-                gasConstant = particle.gasConstant;
-                restDensity = particle.restDensity;
-            }
-
+            var particle = particles[index];
+            float3 position = positions[index].Value;
+            float radius = particle.radius;
+            float mass = 1f / masses[index].InverseMass;
+            float gasConstant = particle.gasConstant;
+            float restDensity = particle.restDensity;
             var gridPosition = FluidSPHUtils.Quantize(position, gridSize[0]);
             float kernelRadius = radius * kernelRadiusRate;
             var kernelRadius2 = math.pow(kernelRadius, 2f);
@@ -198,9 +182,9 @@ public partial class FluidSPHByCPUSystem : SystemBase
                                 kernelRadius,
                                 viscosity,
                                 densityi,
-                                densities[positions.Length + j],
+                                boundaryParticles[j].restDensity,
                                 pressurei,
-                                pressures[positions.Length + j],
+                                0,
                                 velocityi,
                                 new float3(0),
                                 boundaryParticles[j].mass,
@@ -274,12 +258,13 @@ public partial class FluidSPHByCPUSystem : SystemBase
 
     protected override void OnUpdate()
     {
-        if (SystemInfo.supportsComputeShaders && GetSingleton<SimulationSettings>().UseGPU)
+        var settings = GetSingleton<SimulationSettings>();
+        if (SystemInfo.supportsComputeShaders && settings.UseGPU)
         {
             Enabled = false;
             return;
         }
-        World.GetOrCreateSystem<FixedStepSimulationSystemGroup>().Timestep = 1f / 30f;
+        World.GetOrCreateSystem<FixedStepSimulationSystemGroup>().Timestep = 1f / settings.FPS;
 
         var data = FluidSPHUtils.InitializeData(m_ParticleQuery, m_BoundaryQuery, GetComponentTypeHandle<FluidParticleComponent>(true));
         var positions = data.positions;
@@ -292,8 +277,8 @@ public partial class FluidSPHByCPUSystem : SystemBase
         var grid = data.grid;
         var boundaryGrid = data.boundaryGrid;
 
-        var pressures = new NativeArray<float>(positions.Length + boundaryPositions.Length, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
-        var densities = new NativeArray<float>(positions.Length + boundaryPositions.Length, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+        var pressures = new NativeArray<float>(positions.Length, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+        var densities = new NativeArray<float>(positions.Length, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
 
         var computeDensityAndPressureJob = new ComputeDensityAndPressureJob
         {
@@ -310,7 +295,7 @@ public partial class FluidSPHByCPUSystem : SystemBase
             densities = densities,
             pressures = pressures,
         };
-        Dependency = computeDensityAndPressureJob.Schedule(positions.Length + boundaryPositions.Length, m_Concurrency, data.dependency);
+        Dependency = computeDensityAndPressureJob.Schedule(positions.Length, m_Concurrency, data.dependency);
 
         var forces = new NativeArray<float3>(positions.Length, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
 
