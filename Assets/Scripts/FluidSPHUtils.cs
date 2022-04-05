@@ -26,7 +26,7 @@ public static class FluidSPHUtils
     }
 
     [BurstCompile]
-    private struct FindGridSizeJob : IJobEntityBatch
+    public struct FindGridSizeJob : IJobEntityBatch
     {
         [ReadOnly] public ComponentTypeHandle<FluidParticleComponent> particleTypeHandle;
         public NativeArray<float> gridSize;

@@ -275,7 +275,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 72e15d09064a95e4a82058d1083c6ae7, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  UseGPU: 0
+  UseGPU: 1
   FPS: 60
 --- !u!1001 &539954247
 PrefabInstance:

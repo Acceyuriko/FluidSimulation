@@ -1,0 +1,90 @@
+#define THREADS 64
+#define PI 3.14159265358979323846
+
+int ParticleCount;
+int BoundaryCount;
+float GridSize;
+float3 GridMin;
+float3 GridLength;
+
+StructuredBuffer<float3> Positions;
+StructuredBuffer<float3> BoundaryPositions;
+
+RWStructuredBuffer<int2> IndexMap;
+
+int3 Quantize(float3 position)
+{
+    position = position - GridMin;
+    int3 result = {
+        floor(position.x / GridSize),
+        floor(position.y / GridSize),
+        floor(position.z / GridSize)
+    };
+    return result;
+}
+
+uint Hash(int3 p)
+{
+    return p.x + p.y * GridLength.x + p.z * GridLength.x * GridLength.y;
+}
+
+#pragma kernel HashPosition
+
+[numthreads(THREADS, 1, 1)]
+void HashPosition(int id: SV_DISPATCHTHREADID)
+{
+    int2 index;
+    index.y = id;
+    if (id < ParticleCount)
+    {
+        index.x = Hash(Quantize(Positions[id]));
+        IndexMap[id] = index;
+    } 
+    else if (id < ParticleCount + BoundaryCount)
+    {
+        index.x = Hash(Quantize(BoundaryPositions[id - ParticleCount]));
+        IndexMap[id] = index;
+    }
+}
+
+RWStructuredBuffer<int2> Table;
+
+#pragma kernel MapTable
+
+[numthreads(THREADS, 1, 1)]
+void MapTable(int id: SV_DISPATCHTHREADID)
+{
+    if (id < ParticleCount + BoundaryCount)
+    {
+        int hash = IndexMap[id].x;
+        if (id == 0 || hash != IndexMap[id - 1].x)
+        {
+            Table[hash].x = id;
+        }
+        if (id == ParticleCount + BoundaryCount -1 || hash != IndexMap[id + 1].x)
+        {
+            Table[hash].y = id + 1;
+        }
+    }
+}
+
+RWStructuredBuffer<float> Densities;
+RWStructuredBuffer<float> Pressures;
+
+#pragma kernel ComputeDensityAndPressure
+
+[numthreads(THREADS, 1, 1)]
+void ComputeDensityAndPressure(int id : SV_DISPATCHTHREADID)
+{
+    if (id > ParticleCount)
+    {
+        return;
+    }
+    float3 positioni = Positions[id];
+
+    float density = 0;
+    float pressure = 0;
+
+    Densities[id] = density;
+    Pressures[id] = pressure;
+}
