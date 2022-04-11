@@ -11,6 +11,8 @@ using UnityEngine.Rendering;
 public partial class FluidSPHByGPUSystem : SystemBase
 {
     private readonly int NUM_THREADS = 64;
+    private readonly int BITONIC_FLIP = 0;
+    private readonly int BITONIC_DISPERSE = 1;
 
     private EntityQuery m_ParticleQuery;
     private EntityQuery m_BoundaryQuery;
@@ -37,6 +39,7 @@ public partial class FluidSPHByGPUSystem : SystemBase
     private NativeArray<BoundaryParticleComponent> m_BoundaryParticles = new NativeArray<BoundaryParticleComponent>(0, Allocator.Persistent);
     private ComputeBuffer m_BoundaryParticlesBuffer;
 
+    private int m_IndexMapCount = 0;
     private ComputeBuffer m_IndexMap;
 
     private ComputeShader m_Shader;
@@ -124,7 +127,8 @@ public partial class FluidSPHByGPUSystem : SystemBase
         if (changed)
         {
             m_IndexMap?.Release();
-            m_IndexMap = new ComputeBuffer(m_ParticleCount + m_BoundaryCount, sizeof(int) * 2);
+            m_IndexMapCount = 1 << math.ceillog2(m_ParticleCount + m_BoundaryCount);
+            m_IndexMap = new ComputeBuffer(m_IndexMapCount, sizeof(int) * 2);
         }
 
         int groups = (m_ParticleCount + m_BoundaryCount) / NUM_THREADS;
@@ -197,6 +201,7 @@ public partial class FluidSPHByGPUSystem : SystemBase
         ));
 
         HashPosition(groups);
+        BitonicSort();
 
         gridSize.Dispose(Dependency);
         min.Dispose(Dependency);
@@ -213,6 +218,28 @@ public partial class FluidSPHByGPUSystem : SystemBase
         m_Shader.Dispatch(hashKernel, groups, 1, 1);
     }
 
+    private void BitonicSort()
+    {
+        int groups = m_IndexMapCount / 2 / NUM_THREADS;
+        var sortKernel = m_Shader.FindKernel("BitonicSort");
+        m_Shader.SetInt("IndexMapCount", m_IndexMapCount);
+        m_Shader.SetBuffer(sortKernel, "IndexMap", m_IndexMap);
+
+        for (int h = 2; h <= m_IndexMapCount; h *= 2)
+        {
+            m_Shader.SetInt("BitonicStage", BITONIC_FLIP);
+            m_Shader.SetInt("BitonicBlockSize", h);
+            m_Shader.Dispatch(sortKernel, groups, 1, 1);
+
+            for (int hh = h / 2; hh > 1; hh /= 2)
+            {
+                m_Shader.SetInt("BitonicStage", BITONIC_DISPERSE);
+                m_Shader.SetInt("BitonicBlockSize", hh);
+                m_Shader.Dispatch(sortKernel, groups, 1, 1);
+            }
+        }
+    }
+
     private void DebugLogBuffer<T>(ComputeBuffer buffer, int start, int end) where T : struct
     {
         var arr = new NativeArray<T>(buffer.count, Allocator.Temp);
@@ -222,6 +249,7 @@ public partial class FluidSPHByGPUSystem : SystemBase
         {
             Debug.Log($"{i}, {arr[i]}");
         }
+        arr.Dispose();
     }
 
     protected override void OnDestroy()
