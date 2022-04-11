@@ -42,6 +42,9 @@ public partial class FluidSPHByGPUSystem : SystemBase
     private int m_IndexMapCount = 0;
     private ComputeBuffer m_IndexMap;
 
+    private int m_TableCount = 0;
+    private ComputeBuffer m_Table;
+
     private ComputeShader m_Shader;
 
     protected override void OnCreate()
@@ -181,6 +184,18 @@ public partial class FluidSPHByGPUSystem : SystemBase
         Dependency = JobHandle.CombineDependencies(collectBoundaryHandle, findGridSizeJobHandle);
         Dependency.Complete();
 
+        Vector3 gridLength = new Vector3(
+            math.ceil((max[0] - min[0]) / gridSize[0]),
+            math.ceil((max[1] - min[1]) / gridSize[0]),
+            math.ceil((max[2] - min[2]) / gridSize[0])
+        );
+        if (m_TableCount != gridLength.x * gridLength.y * gridLength.z)
+        {
+            m_TableCount = (int)(gridLength.x * gridLength.y * gridLength.z);
+            m_Table?.Release();
+            m_Table = new ComputeBuffer(m_TableCount, sizeof(int) * 2);
+        }
+
         m_PositionsBuffer.SetData(positions);
         m_MassesBuffer.SetData(masses);
         m_VelocitiesBuffer.SetData(velocities);
@@ -193,34 +208,30 @@ public partial class FluidSPHByGPUSystem : SystemBase
         m_Shader.SetInt("BoundaryCount", m_BoundaryCount);
         m_Shader.SetFloat("GridSize", gridSize[0]);
         m_Shader.SetVector("GridMin", new Vector4(min[0], min[1], min[2], 0));
-        m_Shader.SetVector("GridLength", new Vector4(
-            math.ceil((max[0] - min[0]) / gridSize[0]),
-            math.ceil((max[1] - min[1]) / gridSize[0]),
-            math.ceil((max[2] - min[2]) / gridSize[0]),
-            0
-        ));
+        m_Shader.SetVector("GridLength", gridLength);
 
-        HashPosition(groups);
+        HashPosition();
         BitonicSort();
+        MapTable();
 
         gridSize.Dispose(Dependency);
         min.Dispose(Dependency);
         max.Dispose(Dependency);
     }
 
-    private void HashPosition(int groups)
+    private void HashPosition()
     {
         var hashKernel = m_Shader.FindKernel("HashPosition");
         m_Shader.SetBuffer(hashKernel, "Positions", m_PositionsBuffer);
         m_Shader.SetBuffer(hashKernel, "BoundaryPositions", m_BoundaryPositionsBuffer);
         m_Shader.SetBuffer(hashKernel, "IndexMap", m_IndexMap);
 
-        m_Shader.Dispatch(hashKernel, groups, 1, 1);
+        m_Shader.Dispatch(hashKernel, ComputeGroups(m_ParticleCount + m_BoundaryCount), 1, 1);
     }
 
     private void BitonicSort()
     {
-        int groups = m_IndexMapCount / 2 / NUM_THREADS;
+        int groups = ComputeGroups(m_IndexMapCount / 2);
         var sortKernel = m_Shader.FindKernel("BitonicSort");
         m_Shader.SetInt("IndexMapCount", m_IndexMapCount);
         m_Shader.SetBuffer(sortKernel, "IndexMap", m_IndexMap);
@@ -238,6 +249,22 @@ public partial class FluidSPHByGPUSystem : SystemBase
                 m_Shader.Dispatch(sortKernel, groups, 1, 1);
             }
         }
+    }
+
+    private void MapTable()
+    {
+        var mapKernel = m_Shader.FindKernel("MapTable");
+
+        m_Shader.SetBuffer(mapKernel, "Table", m_Table);
+        m_Shader.SetBuffer(mapKernel, "IndexMap", m_IndexMap);
+        m_Shader.Dispatch(mapKernel, ComputeGroups(m_TableCount), 1, 1);
+    }
+
+    private int ComputeGroups(int total)
+    {
+        int groups = total / NUM_THREADS;
+        if (total % NUM_THREADS != 0) groups++;
+        return groups;
     }
 
     private void DebugLogBuffer<T>(ComputeBuffer buffer, int start, int end) where T : struct
