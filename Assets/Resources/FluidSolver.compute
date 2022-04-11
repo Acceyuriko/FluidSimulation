@@ -6,6 +6,7 @@ int BoundaryCount;
 float GridSize;
 float3 GridMin;
 float3 GridLength;
+float KernelRadiusRate;
 
 StructuredBuffer<float3> Positions;
 StructuredBuffer<float3> BoundaryPositions;
@@ -106,6 +107,17 @@ void MapTable(int id: SV_DISPATCHTHREADID)
     }
 }
 
+struct Particle
+{
+    float radius;
+    float restDensity;
+    float viscosity;
+    float gasConstant;
+};
+
+StructuredBuffer<float> Masses;
+StructuredBuffer<Particle> Particles;
+
 RWStructuredBuffer<float> Densities;
 RWStructuredBuffer<float> Pressures;
 
@@ -119,10 +131,45 @@ void ComputeDensityAndPressure(int id : SV_DISPATCHTHREADID)
         return;
     }
     float3 positioni = Positions[id];
+    Particle particle = Particles[id];
+    float mass = 1.0f / Masses[id];
+    float kernelRadius = particle.radius * KernelRadiusRate;
+    float kernelRadius2 = kernelRadius * kernelRadius;
+    float poly6Constant = mass * 315.0f / (64.0f * PI * pow(abs(kernelRadius), 9.0f));
 
     float density = 0;
-    float pressure = 0;
+
+    int3 gridPosition = Quantize(positioni);
+    for (int x = -1; x <=1; x++)
+    {
+        for (int y = -1; y <= 1; y++)
+        {
+            for (int z = -1; z <= 1; z++)
+            {
+                int neighborHashIndex = Hash(gridPosition + int3(x, y, z));
+                for (int mapIndex = Table[neighborHashIndex].x; mapIndex < Table[neighborHashIndex].y; mapIndex++)
+                {
+                    int n = IndexMap[mapIndex].y;
+                    float3 positionj;
+                    if (n < ParticleCount)
+                    {
+                        positionj = Positions[n];
+                    }
+                    else
+                    {
+                        positionj = BoundaryPositions[n - ParticleCount];
+                    }
+
+                    float distance2 = dot(positioni - positionj, positioni - positionj);
+                    if (distance2 < kernelRadius2)
+                    {
+                        density += poly6Constant * pow(abs(kernelRadius2 - distance2), 3.0f);
+                    }
+                }
+            }
+        }
+    }
 
     Densities[id] = density;
-    Pressures[id] = pressure;
+    Pressures[id] = max(particle.gasConstant * (density - particle.restDensity), 0);
 }

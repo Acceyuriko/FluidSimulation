@@ -39,7 +39,6 @@ public partial class FluidSPHByCPUSystem : SystemBase
         [ReadOnly] public NativeMultiHashMap<uint, int> grid;
         [ReadOnly] public NativeArray<float> gridSize;
         [ReadOnly] public NativeArray<Translation> boundaryPositions;
-        [ReadOnly] public NativeArray<BoundaryParticleComponent> boundaryParticles;
         [ReadOnly] public NativeMultiHashMap<uint, int> boundaryGrid;
         [ReadOnly] public float kernelRadiusRate;
 
@@ -288,7 +287,6 @@ public partial class FluidSPHByCPUSystem : SystemBase
             grid = grid,
             gridSize = gridSize,
             boundaryPositions = boundaryPositions,
-            boundaryParticles = boundaryParticles,
             boundaryGrid = boundaryGrid,
             kernelRadiusRate = FluidSPHUtils.KernelRadiusRate,
 
