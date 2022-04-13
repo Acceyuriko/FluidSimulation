@@ -45,9 +45,13 @@ public partial class FluidSPHByGPUSystem : SystemBase
     private int m_TableCount = 0;
     private ComputeBuffer m_Table;
 
-    private ComputeBuffer m_Densities;
+    private NativeArray<float> m_Densities = new NativeArray<float>(0, Allocator.Persistent);
+    private ComputeBuffer m_DensitiesBuffer;
 
-    private ComputeBuffer m_Pressures;
+    private ComputeBuffer m_PressuresBuffer;
+
+    private NativeArray<float3> m_Forces = new NativeArray<float3>(0, Allocator.Persistent);
+    private ComputeBuffer m_ForcesBuffer;
 
     private ComputeShader m_Shader;
 
@@ -114,11 +118,18 @@ public partial class FluidSPHByGPUSystem : SystemBase
             m_ParticlesBuffer?.Release();
             m_ParticlesBuffer = new ComputeBuffer(m_ParticleCount, Marshal.SizeOf(typeof(FluidParticleComponent)));
 
-            m_Densities?.Release();
-            m_Densities = new ComputeBuffer(m_ParticleCount, sizeof(float));
+            m_Densities.Dispose();
+            m_Densities = new NativeArray<float>(m_ParticleCount, Allocator.Persistent);
+            m_DensitiesBuffer?.Release();
+            m_DensitiesBuffer = new ComputeBuffer(m_ParticleCount, sizeof(float));
 
-            m_Pressures?.Release();
-            m_Pressures = new ComputeBuffer(m_ParticleCount, sizeof(float));
+            m_PressuresBuffer?.Release();
+            m_PressuresBuffer = new ComputeBuffer(m_ParticleCount, sizeof(float));
+
+            m_Forces.Dispose();
+            m_Forces = new NativeArray<float3>(m_ParticleCount, Allocator.Persistent);
+            m_ForcesBuffer?.Release();
+            m_ForcesBuffer = new ComputeBuffer(m_ParticleCount, Marshal.SizeOf(typeof(float3)));
 
             changed = true;
         }
@@ -127,14 +138,14 @@ public partial class FluidSPHByGPUSystem : SystemBase
             m_BoundaryCount = m_BoundaryQuery.CalculateEntityCount();
 
             m_BoundaryPositions.Dispose();
-            m_BoundaryPositions = new NativeArray<float3>(m_ParticleCount, Allocator.Persistent);
+            m_BoundaryPositions = new NativeArray<float3>(m_BoundaryCount, Allocator.Persistent);
             m_BoundaryPositionsBuffer?.Release();
-            m_BoundaryPositionsBuffer = new ComputeBuffer(m_ParticleCount, Marshal.SizeOf(typeof(float3)));
+            m_BoundaryPositionsBuffer = new ComputeBuffer(m_BoundaryCount, Marshal.SizeOf(typeof(float3)));
 
             m_BoundaryParticles.Dispose();
-            m_BoundaryParticles = new NativeArray<BoundaryParticleComponent>(m_ParticleCount, Allocator.Persistent);
+            m_BoundaryParticles = new NativeArray<BoundaryParticleComponent>(m_BoundaryCount, Allocator.Persistent);
             m_BoundaryParticlesBuffer?.Release();
-            m_BoundaryParticlesBuffer = new ComputeBuffer(m_ParticleCount, Marshal.SizeOf(typeof(BoundaryParticleComponent)));
+            m_BoundaryParticlesBuffer = new ComputeBuffer(m_BoundaryCount, Marshal.SizeOf(typeof(BoundaryParticleComponent)));
 
             changed = true;
         }
@@ -142,11 +153,8 @@ public partial class FluidSPHByGPUSystem : SystemBase
         {
             m_IndexMap?.Release();
             m_IndexMapCount = 1 << math.ceillog2(m_ParticleCount + m_BoundaryCount);
-            m_IndexMap = new ComputeBuffer(m_IndexMapCount, sizeof(int) * 2);
+            m_IndexMap = new ComputeBuffer(m_IndexMapCount, Marshal.SizeOf(typeof(uint2)));
         }
-
-        int groups = (m_ParticleCount + m_BoundaryCount) / NUM_THREADS;
-        if ((m_ParticleCount + m_BoundaryCount) % NUM_THREADS != 0) groups++;
 
         var positions = m_Positions;
         var masses = m_Masses;
@@ -195,14 +203,23 @@ public partial class FluidSPHByGPUSystem : SystemBase
         Dependency = JobHandle.CombineDependencies(collectBoundaryHandle, findGridSizeJobHandle);
         Dependency.Complete();
 
-        Vector3 gridLength = new Vector3(
-            math.ceil((max[0] - min[0]) / gridSize[0]),
-            math.ceil((max[1] - min[1]) / gridSize[0]),
-            math.ceil((max[2] - min[2]) / gridSize[0])
+        min[0] = math.floor(min[0] / gridSize[0]) * gridSize[0];
+        min[1] = math.floor(min[1] / gridSize[0]) * gridSize[0];
+        min[2] = math.floor(min[2] / gridSize[0]) * gridSize[0];
+
+        max[0] = math.ceil(max[0] / gridSize[0]) * gridSize[0];
+        max[1] = math.ceil(max[1] / gridSize[0]) * gridSize[0];
+        max[2] = math.ceil(max[2] / gridSize[0]) * gridSize[0];
+
+        int3 gridLength = new int3(
+            (int)math.ceil((max[0] - min[0]) / gridSize[0]),
+            (int)math.ceil((max[1] - min[1]) / gridSize[0]),
+            (int)math.ceil((max[2] - min[2]) / gridSize[0])
         );
-        if (m_TableCount != gridLength.x * gridLength.y * gridLength.z)
+        var newTableCount = gridLength.x * gridLength.y * gridLength.z;
+        if (m_TableCount != newTableCount)
         {
-            m_TableCount = (int)(gridLength.x * gridLength.y * gridLength.z);
+            m_TableCount = newTableCount;
             m_Table?.Release();
             m_Table = new ComputeBuffer(m_TableCount, sizeof(int) * 2);
         }
@@ -219,13 +236,30 @@ public partial class FluidSPHByGPUSystem : SystemBase
         m_Shader.SetInt("BoundaryCount", m_BoundaryCount);
         m_Shader.SetFloat("GridSize", gridSize[0]);
         m_Shader.SetVector("GridMin", new Vector4(min[0], min[1], min[2], 0));
-        m_Shader.SetVector("GridLength", gridLength);
+        m_Shader.SetVector("GridLength", new Vector4(gridLength.x, gridLength.y, gridLength.z, 0));
         m_Shader.SetFloat("KernelRadiusRate", FluidSPHUtils.KernelRadiusRate);
 
         HashPosition();
         BitonicSort();
+        ClearTable();
         MapTable();
         ComputeDensityAndPressure();
+        ComputeForce();
+
+        var requestDensities = AsyncGPUReadback.RequestIntoNativeArray(ref m_Densities, m_DensitiesBuffer);
+        var requestForces = AsyncGPUReadback.RequestIntoNativeArray(ref m_Forces, m_ForcesBuffer);
+        requestDensities.WaitForCompletion();
+        requestForces.WaitForCompletion();
+
+        var applyForceJob = new FluidSPHUtils.ApplyForceJob
+        {
+            densities = m_Densities,
+            forces = m_Forces,
+            deltaTime = Time.DeltaTime,
+            massTypeHandle = GetComponentTypeHandle<PhysicsMass>(true),
+            velocityTypeHandle = GetComponentTypeHandle<PhysicsVelocity>(),
+        };
+        Dependency = applyForceJob.ScheduleParallel(m_ParticleQuery, Dependency);
 
         gridSize.Dispose(Dependency);
         min.Dispose(Dependency);
@@ -264,13 +298,21 @@ public partial class FluidSPHByGPUSystem : SystemBase
         }
     }
 
+    private void ClearTable()
+    {
+        var clearKernel = m_Shader.FindKernel("ClearTable");
+
+        m_Shader.SetBuffer(clearKernel, "Table", m_Table);
+        m_Shader.Dispatch(clearKernel, ComputeGroups(m_TableCount), 1, 1);
+    }
+
     private void MapTable()
     {
         var mapKernel = m_Shader.FindKernel("MapTable");
 
         m_Shader.SetBuffer(mapKernel, "Table", m_Table);
         m_Shader.SetBuffer(mapKernel, "IndexMap", m_IndexMap);
-        m_Shader.Dispatch(mapKernel, ComputeGroups(m_TableCount), 1, 1);
+        m_Shader.Dispatch(mapKernel, ComputeGroups(m_IndexMapCount), 1, 1);
     }
 
     private void ComputeDensityAndPressure()
@@ -278,13 +320,30 @@ public partial class FluidSPHByGPUSystem : SystemBase
         var computeKernel = m_Shader.FindKernel("ComputeDensityAndPressure");
 
         m_Shader.SetBuffer(computeKernel, "Positions", m_PositionsBuffer);
-        m_Shader.SetBuffer(computeKernel, "BoundaryPositions", m_BoundaryParticlesBuffer);
+        m_Shader.SetBuffer(computeKernel, "BoundaryPositions", m_BoundaryPositionsBuffer);
         m_Shader.SetBuffer(computeKernel, "Masses", m_MassesBuffer);
         m_Shader.SetBuffer(computeKernel, "Particles", m_ParticlesBuffer);
         m_Shader.SetBuffer(computeKernel, "Table", m_Table);
         m_Shader.SetBuffer(computeKernel, "IndexMap", m_IndexMap);
-        m_Shader.SetBuffer(computeKernel, "Densities", m_Densities);
-        m_Shader.SetBuffer(computeKernel, "Pressures", m_Pressures);
+        m_Shader.SetBuffer(computeKernel, "Densities", m_DensitiesBuffer);
+        m_Shader.SetBuffer(computeKernel, "Pressures", m_PressuresBuffer);
+        m_Shader.Dispatch(computeKernel, ComputeGroups(m_ParticleCount), 1, 1);
+    }
+
+    private void ComputeForce()
+    {
+        var computeKernel = m_Shader.FindKernel("ComputeForce");
+        m_Shader.SetBuffer(computeKernel, "Positions", m_PositionsBuffer);
+        m_Shader.SetBuffer(computeKernel, "BoundaryPositions", m_BoundaryPositionsBuffer);
+        m_Shader.SetBuffer(computeKernel, "Masses", m_MassesBuffer);
+        m_Shader.SetBuffer(computeKernel, "Velocities", m_VelocitiesBuffer);
+        m_Shader.SetBuffer(computeKernel, "Particles", m_ParticlesBuffer);
+        m_Shader.SetBuffer(computeKernel, "BoundaryParticles", m_BoundaryParticlesBuffer);
+        m_Shader.SetBuffer(computeKernel, "Table", m_Table);
+        m_Shader.SetBuffer(computeKernel, "IndexMap", m_IndexMap);
+        m_Shader.SetBuffer(computeKernel, "Densities", m_DensitiesBuffer);
+        m_Shader.SetBuffer(computeKernel, "Pressures", m_PressuresBuffer);
+        m_Shader.SetBuffer(computeKernel, "Forces", m_ForcesBuffer);
         m_Shader.Dispatch(computeKernel, ComputeGroups(m_ParticleCount), 1, 1);
     }
 
@@ -330,7 +389,12 @@ public partial class FluidSPHByGPUSystem : SystemBase
         m_IndexMap?.Release();
         m_Table?.Release();
 
-        m_Densities?.Release();
-        m_Pressures?.Release();
+        m_Densities.Dispose();
+        m_DensitiesBuffer?.Release();
+
+        m_PressuresBuffer?.Release();
+
+        m_Forces.Dispose();
+        m_ForcesBuffer?.Release();
     }
 }

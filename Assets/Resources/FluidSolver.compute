@@ -15,12 +15,8 @@ RWStructuredBuffer<uint2> IndexMap;
 
 int3 Quantize(float3 position)
 {
-    position = position - GridMin;
-    int3 result = {
-        floor(position.x / GridSize),
-        floor(position.y / GridSize),
-        floor(position.z / GridSize)
-    };
+    position = (position - GridMin) / GridSize;
+    int3 result = clamp(position, 0, GridLength - 1);
     return result;
 }
 
@@ -88,6 +84,14 @@ void BitonicSort(int id: SV_DISPATCHTHREADID)
 
 RWStructuredBuffer<int2> Table;
 
+#pragma kernel ClearTable
+
+[numthreads(THREADS, 1, 1)]
+void ClearTable(int id: SV_DISPATCHTHREADID)
+{
+    Table[id] = 0;
+}
+
 #pragma kernel MapTable
 
 [numthreads(THREADS, 1, 1)]
@@ -126,7 +130,7 @@ RWStructuredBuffer<float> Pressures;
 [numthreads(THREADS, 1, 1)]
 void ComputeDensityAndPressure(int id : SV_DISPATCHTHREADID)
 {
-    if (id > ParticleCount)
+    if (id >= ParticleCount)
     {
         return;
     }
@@ -140,7 +144,7 @@ void ComputeDensityAndPressure(int id : SV_DISPATCHTHREADID)
     float density = 0;
 
     int3 gridPosition = Quantize(positioni);
-    for (int x = -1; x <=1; x++)
+    for (int x = -1; x <= 1; x++)
     {
         for (int y = -1; y <= 1; y++)
         {
@@ -150,6 +154,7 @@ void ComputeDensityAndPressure(int id : SV_DISPATCHTHREADID)
                 for (int mapIndex = Table[neighborHashIndex].x; mapIndex < Table[neighborHashIndex].y; mapIndex++)
                 {
                     int n = IndexMap[mapIndex].y;
+
                     float3 positionj;
                     if (n < ParticleCount)
                     {
@@ -172,4 +177,96 @@ void ComputeDensityAndPressure(int id : SV_DISPATCHTHREADID)
 
     Densities[id] = density;
     Pressures[id] = max(particle.gasConstant * (density - particle.restDensity), 0);
+}
+
+struct BoundaryParticle
+{
+    float radius;
+    float mass;
+    float restDensity;
+};
+
+StructuredBuffer<float3> Velocities;
+StructuredBuffer<BoundaryParticle> BoundaryParticles;
+
+RWStructuredBuffer<float3> Forces;
+
+#pragma kernel ComputeForce
+
+[numthreads(THREADS, 1, 1)]
+void ComputeForce(int id : SV_DISPATCHTHREADID)
+{
+    if (id >= ParticleCount)
+    {
+        return;
+    }
+    float densityi = Densities[id];
+    float pressurei = Pressures[id];
+    float3 positioni = Positions[id];
+    float3 velocityi = Velocities[id];
+
+    Particle particlei = Particles[id];
+    float viscosity = particlei.viscosity;
+    float kernelRadius = particlei.radius * KernelRadiusRate;
+
+    float3 forcePressure = 0;
+    float3 forceViscosity = 0;
+    float3 forceGravity = float3(0, -9.81f, 0) * densityi;
+    int3 gridPosition = Quantize(positioni);
+
+    for (int x = -1; x <= 1; x++)
+    {
+        for (int y = -1; y <= 1; y++)
+        {
+            for (int z = -1; z <= 1; z++)
+            {
+                int neighborHashIndex = Hash(gridPosition + int3(x, y, z));
+                for (int mapIndex = Table[neighborHashIndex].x; mapIndex < Table[neighborHashIndex].y; mapIndex++)
+                {
+                    int n = IndexMap[mapIndex].y;
+                    if (n == id) {
+                        continue;
+                    }
+
+                    float3 positionj;
+                    float densityj;
+                    float pressurej;
+                    float massj;
+                    float3 velocityj;
+                    if (n < ParticleCount)
+                    {
+                        positionj = Positions[n];
+                        densityj = Densities[n];
+                        pressurej = Pressures[n];
+                        massj = 1.0f / Masses[n];
+                        velocityj = Velocities[n];
+                    }
+                    else
+                    {
+                        positionj = BoundaryPositions[n - ParticleCount];
+                        BoundaryParticle particlej = BoundaryParticles[n - ParticleCount];
+                        densityj = particlej.restDensity;
+                        pressurej = 0;
+                        massj = particlej.mass;
+                        velocityj = 0;
+                    }
+
+                    float3 vij = positioni - positionj;
+                    float distance = length(vij);
+                    if (distance < kernelRadius)
+                    {
+                        forcePressure += -densityi * massj * (pressurei / pow(abs(densityi), 2.0f) + pressurej / pow(abs(densityj), 2.0f)) *
+                            (-45.0f / (PI * pow(abs(kernelRadius), 6.0f)) * pow(abs(kernelRadius - distance), 2.0f)) *
+                            normalize(vij);
+
+                        forceViscosity += viscosity / densityi * massj * (velocityj - velocityi) *
+                            45.0f / (PI * pow(abs(kernelRadius), 6.0f)) * (kernelRadius - distance);
+                    }
+
+                }
+            }
+        }
+    }
+
+    Forces[id] = forcePressure + forceViscosity + forceGravity;
 }

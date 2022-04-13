@@ -96,5 +96,4 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   radius: 0.25
   mass: 125
-  gasConstant: 512
   restDensity: 1000
