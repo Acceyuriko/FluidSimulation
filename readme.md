@@ -1,5 +1,7 @@
 ## 浮力与流体仿真
 
+![preview](./Preview/preview.gif)
+
 ## 参考文献
 - [Unity ECS Job System SPH](https://github.com/leonardo-montes/Unity-ECS-Job-System-SPH)
 - [how to implement a fluid simulation on the cpu with unity ecs job system](https://medium.com/@leomontes_60748/how-to-implement-a-fluid-simulation-on-the-cpu-with-unity-ecs-job-system-bf90a0f2724f)
